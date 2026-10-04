@@ -1,0 +1,6 @@
+{
+  "_comment": "Always-on layers merged into every release branch, on top of `experimental`, before the daily upstream pull requests are aggregated. Each entry is a branch name. To drop a feature, remove its layer here (and close/delete the corresponding pull request).",
+  "layers": [
+    "pr/experimental-channel"
+  ]
+}

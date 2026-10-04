@@ -28,6 +28,14 @@
 **English** (**Standard**, [uʍoᗡ ǝpᴉsd∩](README_en_Qabs.md)) | 中文 ([简体](README_zh_Hans.md), [繁體](README_zh_Hant.md), [文言](README_lzh.md)) | [日本語](README_ja.md) | [español](README_es.md) | [русский](README_ru.md) | [українська](README_uk.md)
 <!-- #END LANGUAGE_SWITCHER -->
 
+> [!IMPORTANT]
+> **This is not an official project.**
+> This repository is a community-maintained, experimental downstream fork of HMCL and has no affiliation with [HMCL-dev/HMCL](https://github.com/HMCL-dev/HMCL).
+> Builds here are aggressive: they may add or remove features at any time and are **not** supported by the HMCL team.
+> For the official launcher, please visit <https://github.com/HMCL-dev/HMCL> or <https://hmcl.huangyuhui.net>.
+>
+> See [EXPERIMENTAL.md](https://github.com/Churk-Ben/HMCL/blob/experimental/EXPERIMENTAL.md) for the channel and branch policy.
+
 ## Introduction
 
 HMCL is an open-source, cross-platform Minecraft launcher that supports Mod Management, Game Customizing, ModLoader Installing (Forge, NeoForge, Cleanroom, Fabric, Legacy Fabric, Quilt, LiteLoader, and OptiFine), Modpack Creating, UI Customization, and more.

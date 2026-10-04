@@ -1,0 +1,142 @@
+name: Experimental Daily
+
+# Composes a disposable release branch for the experimental channel:
+#   1. start from `experimental` (the stable fork base: community + workflow infra)
+#   2. merge upstream `main`
+#   3. merge every always-on layer from .github/experimental/layers.json
+#   4. aggregate the selected upstream pull requests (conflicts are skipped)
+#   5. build, push the release branch and trigger a release from it
+#
+# `experimental` itself is never modified by this workflow.
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: Number of upstream pull requests to aggregate
+        type: number
+        default: 20
+      include:
+        description: Comma-separated pull request numbers to force include
+        type: string
+        default: ''
+      exclude:
+        description: Comma-separated pull request numbers to force exclude
+        type: string
+        default: ''
+      skip_release:
+        description: Do not trigger a release after composing
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: experimental-daily
+  cancel-in-progress: false
+
+jobs:
+  compose:
+    if: github.repository_owner != 'HMCL-dev'
+    runs-on: ubuntu-latest
+    outputs:
+      branch: ${{ steps.compose.outputs.branch }}
+    steps:
+      - name: Checkout experimental
+        uses: actions/checkout@v6
+        with:
+          ref: experimental
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Select upstream pull requests
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/select-prs.py \
+            --policy .github/experimental/pr-policy.json \
+            --top-n "${{ inputs.top_n || 20 }}" \
+            --include "${{ inputs.include }}" \
+            --exclude "${{ inputs.exclude }}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --report selection.md
+
+      - name: Compose release branch
+        id: compose
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="release/$(date -u +%Y%m%d)"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git switch -c "$branch"
+
+          git remote add upstream https://github.com/HMCL-dev/HMCL.git
+
+          echo "::group::Sync upstream main"
+          git fetch upstream main
+          git merge --no-edit upstream/main
+          echo "::endgroup::"
+
+          echo "::group::Apply always-on layers"
+          while IFS= read -r layer; do
+            [ -z "$layer" ] && continue
+            echo "Merging layer: $layer"
+            git fetch origin "$layer"
+            git merge --no-edit FETCH_HEAD
+          done < <(jq -r '.layers[]' .github/experimental/layers.json)
+          echo "::endgroup::"
+
+          echo "::group::Aggregate upstream pull requests"
+          applied=""
+          skipped=""
+          for pr in $(echo "${{ steps.select.outputs.prs }}" | tr ',' ' '); do
+            [ -z "$pr" ] && continue
+            if git fetch --no-tags upstream "pull/$pr/head" && git merge --no-edit FETCH_HEAD; then
+              applied="$applied $pr"
+            else
+              git merge --abort || true
+              skipped="$skipped $pr"
+            fi
+          done
+          echo "applied:${applied:- none}"
+          echo "skipped:${skipped:- none}"
+          echo "::endgroup::"
+
+          {
+            echo "Automated experimental composition for $(date -u +%Y-%m-%d)."
+            echo
+            echo "Layers: \`$(jq -c '.layers' .github/experimental/layers.json)\`"
+            echo
+            echo "Applied upstream pull requests:${applied:- none}"
+            echo
+            echo "Skipped upstream pull requests (conflict):${skipped:- none}"
+            echo
+            cat selection.md
+          } > /tmp/release-note.md
+
+          git push -u origin --force-with-lease "$branch"
+
+      - name: Build
+        run: xvfb-run --auto-servernum ./gradlew build --no-daemon --parallel
+        env:
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
+
+      - name: Trigger release
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.skip_release != true) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run "Create Release" -R "$GITHUB_REPOSITORY" \
+            --ref "${{ steps.compose.outputs.branch }}" -f prerelease=false

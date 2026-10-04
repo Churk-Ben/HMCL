@@ -28,6 +28,14 @@
 English ([Standard](README.md), [uʍoᗡ ǝpᴉsd∩](README_en_Qabs.md)) | **中文** (**简体**, [繁體](README_zh_Hant.md), [文言](README_lzh.md)) | [日本語](README_ja.md) | [español](README_es.md) | [русский](README_ru.md) | [українська](README_uk.md)
 <!-- #END LANGUAGE_SWITCHER -->
 
+> [!IMPORTANT]
+> **本项目并非官方项目。**
+> 本仓库是由社区维护的 HMCL 实验性下游分支，与 [HMCL-dev/HMCL](https://github.com/HMCL-dev/HMCL) 没有任何隶属关系。
+> 此处的构建相当激进：功能可能随时新增或移除，且**不**受 HMCL 官方团队支持。
+> 如需官方启动器，请访问 <https://github.com/HMCL-dev/HMCL> 或 <https://hmcl.huangyuhui.net>。
+>
+> 渠道与分支策略见 [EXPERIMENTAL.md](https://github.com/Churk-Ben/HMCL/blob/experimental/EXPERIMENTAL_zh_Hans.md)。
+
 ## 简介
 
 HMCL 是一款开源、跨平台的 Minecraft 启动器，支持模组管理、游戏自定义、游戏自动安装 (Forge、NeoForge、Cleanroom、Fabric、Legacy Fabric、Quilt、LiteLoader 和 OptiFine)、整合包创建、界面自定义等功能。
