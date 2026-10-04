@@ -45,22 +45,22 @@ import java.util.List;
 public final class RpmHeader {
 
     /// RPM type code for a signed 16-bit integer.
-    public static final int TYPE_INT16 = 3;
+    private static final int TYPE_INT16 = 3;
 
     /// RPM type code for a signed 32-bit integer.
-    public static final int TYPE_INT32 = 4;
+    private static final int TYPE_INT32 = 4;
 
     /// RPM type code for a single NUL-terminated string.
-    public static final int TYPE_STRING = 6;
+    private static final int TYPE_STRING = 6;
 
     /// RPM type code for an opaque binary blob.
-    public static final int TYPE_BIN = 7;
+    private static final int TYPE_BIN = 7;
 
     /// RPM type code for an array of NUL-terminated strings.
-    public static final int TYPE_STRING_ARRAY = 8;
+    private static final int TYPE_STRING_ARRAY = 8;
 
     /// RPM type code for a locale-aware NUL-terminated string.
-    public static final int TYPE_I18NSTRING = 9;
+    private static final int TYPE_I18NSTRING = 9;
 
     /// Magic bytes that start every header block.
     private static final byte @Unmodifiable [] MAGIC = {

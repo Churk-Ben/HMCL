@@ -17,11 +17,11 @@
  */
 package org.jackhuang.hmcl.gradle.pack;
 
-/// Debian packaging metadata for one HMCL release type.
+/// Linux packaging metadata for one HMCL release type.
 ///
 /// The package name, installed command, desktop file, and alternatives
-/// priority are intentionally centralized here so `CreateDeb` can stay focused
-/// on archive layout instead of duplicating channel-specific branching.
+/// priority are centralized here so [CreateDeb] and [CreateRpm] stay focused on
+/// their respective archive layouts instead of duplicating channel branching.
 public enum ReleaseType {
     STABLE("stable", "hmcl", "HMCL", 100),
     DEVELOPMENT("beta", "hmcl-beta", "HMCL (Beta)", 200),
@@ -39,16 +39,17 @@ public enum ReleaseType {
         this.alternativesPriority = alternativesPriority;
     }
 
-    ///
+    /// Channel identifier used in command names, for example `stable`.
     public String getName() {
         return name;
     }
 
-    /// Debian package name written into `control` and used in the output filename.
+    /// Package name used by the Debian and RPM packagers.
     public String getPackageName() {
         return packageName;
     }
 
+    /// Human-readable name shown in desktop entries.
     public String getDisplayName() {
         return displayName;
     }

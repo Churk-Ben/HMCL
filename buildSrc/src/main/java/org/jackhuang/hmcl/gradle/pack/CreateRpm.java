@@ -17,6 +17,9 @@
  */
 package org.jackhuang.hmcl.gradle.pack;
 
+import kala.compress.archivers.cpio.CpioArchiveEntry;
+import kala.compress.archivers.cpio.CpioArchiveOutputStream;
+import kala.compress.archivers.cpio.CpioConstants;
 import org.gradle.api.DefaultTask;
 import org.gradle.api.GradleException;
 import org.gradle.api.file.RegularFileProperty;
@@ -41,6 +44,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -307,11 +311,29 @@ public abstract class CreateRpm extends DefaultTask {
     }
 
     /// Serializes the file list into an uncompressed SVR4 `newc` cpio archive.
+    ///
+    /// The project already depends on `kala-compress` for the Debian package, so
+    /// its cpio archiver is reused here rather than writing the payload format by
+    /// hand. RPM requires `newc` entries with the original absolute path stored
+    /// relatively, which the archiver emits when the name is prefixed with `./`.
     private static byte[] createCpioArchive(List<RpmFile> files) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        try (CpioArchiveWriter writer = new CpioArchiveWriter(buffer)) {
-            for (RpmFile file : files)
-                writer.putEntry(file.path(), file.mode(), file.content(), file.mtime());
+        try (CpioArchiveOutputStream output = new CpioArchiveOutputStream(buffer, CpioConstants.FORMAT_NEW)) {
+            long inode = 1;
+            for (RpmFile file : files) {
+                String name = "./" + (file.path().startsWith("/") ? file.path().substring(1) : file.path());
+                CpioArchiveEntry entry = new CpioArchiveEntry(CpioConstants.FORMAT_NEW, name, file.content().length);
+                entry.setMode(file.mode());
+                entry.setInode(inode++);
+                entry.setUID(0);
+                entry.setGID(0);
+                entry.setNumberOfLinks(1);
+                entry.setTime(file.mtime());
+                output.putArchiveEntry(entry);
+                if (file.content().length > 0)
+                    output.write(file.content());
+                output.closeArchiveEntry();
+            }
         }
         return buffer.toByteArray();
     }
@@ -532,12 +554,12 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Returns the lowercase hexadecimal SHA-1 digest of `data`.
     private static String sha1(byte @Unmodifiable [] data) {
-        return hex(digest("SHA-1", data));
+        return HexFormat.of().formatHex(digest("SHA-1", data));
     }
 
     /// Returns the lowercase hexadecimal SHA-256 digest of `data`.
     private static String sha256(byte @Unmodifiable [] data) {
-        return hex(digest("SHA-256", data));
+        return HexFormat.of().formatHex(digest("SHA-256", data));
     }
 
     /// Returns the raw MD5 digest of `data`.
@@ -552,15 +574,6 @@ public abstract class CreateRpm extends DefaultTask {
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("Unsupported digest algorithm: " + algorithm, e);
         }
-    }
-
-    /// Formats bytes as lowercase hexadecimal.
-    private static String hex(byte @Unmodifiable [] bytes) {
-        StringBuilder builder = new StringBuilder(bytes.length * 2);
-        for (byte b : bytes)
-            builder.append(Character.forDigit((b >>> 4) & 0xf, 16))
-                    .append(Character.forDigit(b & 0xf, 16));
-        return builder.toString();
     }
 
     /// Writes one big-endian 16-bit integer.
