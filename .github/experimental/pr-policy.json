@@ -13,7 +13,7 @@
     "category": 1.0,
     "momentum": 0.8,
     "popularity": 0.5,
-    "impact": 1.2
+    "impact": 1.5
   },
   "category_scores": {
     "game crash": 1.0,
@@ -23,8 +23,8 @@
   },
   "category_default": 0.3,
   "feasibility": {
-    "overlap_penalty": 1.0,
-    "staleness_penalty": 0.4,
+    "overlap_penalty": 0.4,
+    "staleness_penalty": 0.25,
     "staleness_days": 30,
     "floor": 0.05
   }
