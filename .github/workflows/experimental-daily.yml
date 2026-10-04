@@ -1,0 +1,133 @@
+name: Experimental Daily
+
+# Selects high-priority upstream pull requests, merges them on top of
+# `experimental`, validates the result, lands it through a `workspace/*` pull
+# request and triggers a release. Runs daily and on demand.
+
+on:
+  schedule:
+    - cron: '0 16 * * *'
+  workflow_dispatch:
+    inputs:
+      top_n:
+        description: Number of pull requests to aggregate
+        type: number
+        default: 5
+      include:
+        description: Comma-separated pull request numbers to force include
+        type: string
+        default: ''
+      exclude:
+        description: Comma-separated pull request numbers to force exclude
+        type: string
+        default: ''
+      skip_release:
+        description: Do not trigger a release after aggregating
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: experimental-daily
+  cancel-in-progress: false
+
+jobs:
+  aggregate:
+    if: github.repository_owner != 'HMCL-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experimental
+        uses: actions/checkout@v6
+        with:
+          ref: experimental
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Select pull requests
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/select-prs.py \
+            --policy .github/experimental/pr-policy.json \
+            --top-n "${{ inputs.top_n || 5 }}" \
+            --include "${{ inputs.include }}" \
+            --exclude "${{ inputs.exclude }}" \
+            --github-output "$GITHUB_OUTPUT" \
+            --report selection.md
+
+      - name: Aggregate selected pull requests
+        id: aggregate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/HMCL-dev/HMCL.git
+          branch="workspace/daily-$(date -u +%Y%m%d)"
+          git switch -C "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          applied=""
+          skipped=""
+          for pr in $(echo "${{ steps.select.outputs.prs }}" | tr ',' ' '); do
+            [ -z "$pr" ] && continue
+            if git fetch --no-tags upstream "pull/$pr/head" && git merge --no-edit FETCH_HEAD; then
+              applied="$applied $pr"
+            else
+              git merge --abort || true
+              skipped="$skipped $pr"
+            fi
+          done
+
+          changed=true
+          if [ -z "$applied" ] && [ "$(git rev-list --count "experimental..$branch")" -eq 0 ]; then
+            changed=false
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Automated daily aggregation for the experimental channel."
+            echo
+            echo "Applied:${applied:- none}"
+            echo
+            echo "Skipped (conflict):${skipped:- none}"
+            echo
+            cat selection.md
+          } > body.md
+
+      - name: Build
+        if: ${{ success() && steps.aggregate.outputs.changed == 'true' }}
+        run: xvfb-run --auto-servernum ./gradlew build --no-daemon --parallel
+        env:
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
+
+      - name: Push and open pull request
+        if: ${{ success() && steps.aggregate.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="${{ steps.aggregate.outputs.branch }}"
+          git push -u origin --force-with-lease "$branch"
+          gh pr create --base experimental --head "$branch" \
+            --title "chore: experimental aggregation ($(date -u +%Y-%m-%d))" \
+            --body-file body.md \
+            || gh pr view "$branch" --json url -q .url
+          gh pr merge "$branch" --squash --auto || gh pr merge "$branch" --squash || true
+
+      - name: Trigger release
+        if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.skip_release != true) }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run "Create Release" -R "$GITHUB_REPOSITORY" --ref experimental -f prerelease=false

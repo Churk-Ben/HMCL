@@ -1,0 +1,80 @@
+name: Sync Upstream
+
+# Merges HMCL-dev/HMCL `main` into `experimental` through a `workspace/*` pull
+# request. Runs before the daily aggregation so that aggregation starts from an
+# up-to-date integration branch.
+
+on:
+  schedule:
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: experimental-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository_owner != 'HMCL-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experimental
+        uses: actions/checkout@v6
+        with:
+          ref: experimental
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream main
+        id: merge
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/HMCL-dev/HMCL.git
+          git fetch upstream main
+          branch="workspace/upstream-sync-$(date -u +%Y%m%d)"
+          git switch -C "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          if git merge --no-edit upstream/main; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push and open pull request
+        if: steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="${{ steps.merge.outputs.branch }}"
+          if [ "$(git rev-list --count "experimental..$branch")" -eq 0 ]; then
+            echo "experimental is already up to date with upstream main"
+            exit 0
+          fi
+          git push -u origin "$branch"
+          gh pr create --base experimental --head "$branch" \
+            --title "chore: sync upstream main ($(date -u +%Y-%m-%d))" \
+            --body "Automated merge of \`HMCL-dev/HMCL\` \`main\` into \`experimental\`." \
+            || gh pr view "$branch" --json url -q .url
+          gh pr merge "$branch" --squash --auto || gh pr merge "$branch" --squash || true
+
+      - name: Report conflict
+        if: steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh issue create \
+            --title "Upstream sync conflict ($(date -u +%Y-%m-%d))" \
+            --body "Merging \`HMCL-dev/HMCL\` \`main\` into \`experimental\` produced conflicts. Manual resolution is required."
+          exit 1

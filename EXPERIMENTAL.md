@@ -56,10 +56,21 @@ Lifecycle of a tracked feature:
 
 ## Release policy
 
-Releases are intended to be produced **daily** by an automated workflow, and can also be triggered manually.
-Each release can aggregate a small number of high-priority upstream pull requests on top of upstream `main`,
-together with this fork's own changes. The exact selection rule and how manual additions/removals are specified
-are still being defined.
+Releases are produced **daily**:
+
+1. [`.github/workflows/sync-upstream.yml`](.github/workflows/sync-upstream.yml) merges upstream `main` into
+   `experimental` through a `workspace/*` pull request.
+2. [`.github/workflows/experimental-daily.yml`](.github/workflows/experimental-daily.yml) selects upstream pull
+   requests, aggregates them on top of `experimental`, validates the build and lands the result through another
+   `workspace/*` pull request.
+3. A release is triggered from `experimental` afterwards.
+
+Pull-request selection is driven by
+[`.github/experimental/pr-policy.json`](.github/experimental/pr-policy.json) and computed by
+[`.github/scripts/select-prs.py`](.github/scripts/select-prs.py). Candidates are filtered (no drafts, no
+`in progress`, must be mergeable) and ranked by a configurable weighted sum of dimensions such as thumbs-up
+reactions, freshness, approval, discussion and change size. Entries can be force-included or force-excluded
+in the policy, and both workflows can also be triggered manually from the Actions tab.
 
 ## Contributing
 

@@ -53,8 +53,18 @@
 
 ## 发布策略
 
-计划由自动化工作流**每天**发版，同时保留手动触发。每次发布可在上游 `main` 之上聚合少量高优先级的上游
-PR，并叠加本 fork 自身的改动。具体的选取规则以及如何手动增减，仍在定义中。
+**每天**自动发版：
+
+1. [`.github/workflows/sync-upstream.yml`](.github/workflows/sync-upstream.yml) 通过 `workspace/*` PR 把上游
+   `main` 合并进 `experimental`。
+2. [`.github/workflows/experimental-daily.yml`](.github/workflows/experimental-daily.yml) 选取上游 PR，在
+   `experimental` 之上聚合、验证构建，并通过另一个 `workspace/*` PR 合入。
+3. 随后从 `experimental` 触发发版。
+
+PR 的选取由 [`.github/experimental/pr-policy.json`](.github/experimental/pr-policy.json) 驱动，计算逻辑在
+[`.github/scripts/select-prs.py`](.github/scripts/select-prs.py)。候选会先经过过滤（排除草稿、`in progress`，
+必须可合并），再按可配置的多维加权指标排序（如 👍 反应数、新鲜度、审批、讨论热度、改动规模）。可在策略
+中强制包含或排除指定 PR；两个工作流也都可以在 Actions 页面手动触发。
 
 ## 参与贡献
 

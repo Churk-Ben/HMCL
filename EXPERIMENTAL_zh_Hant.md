@@ -53,8 +53,18 @@
 
 ## 發布策略
 
-計畫由自動化工作流**每天**發版，同時保留手動觸發。每次發布可在上游 `main` 之上聚合少量高優先級的上游
-PR，並疊加本 fork 自身的改動。具體的選取規則以及如何手動增減，仍在定義中。
+**每天**自動發版：
+
+1. [`.github/workflows/sync-upstream.yml`](.github/workflows/sync-upstream.yml) 透過 `workspace/*` PR 把上游
+   `main` 合併進 `experimental`。
+2. [`.github/workflows/experimental-daily.yml`](.github/workflows/experimental-daily.yml) 選取上游 PR，在
+   `experimental` 之上聚合、驗證建置，並透過另一個 `workspace/*` PR 合入。
+3. 隨後從 `experimental` 觸發發版。
+
+PR 的選取由 [`.github/experimental/pr-policy.json`](.github/experimental/pr-policy.json) 驅動，計算邏輯在
+[`.github/scripts/select-prs.py`](.github/scripts/select-prs.py)。候選會先經過過濾（排除草稿、`in progress`，
+必須可合併），再按可配置的多維加權指標排序（如 👍 反應數、新鮮度、審批、討論熱度、改動規模）。可在策略
+中強制包含或排除指定 PR；兩個工作流也都可以在 Actions 頁面手動觸發。
 
 ## 參與貢獻
 
