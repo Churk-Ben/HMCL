@@ -106,8 +106,15 @@ public final class Metadata {
         return "dev".equals(BUILD_CHANNEL);
     }
 
+    /// Returns whether this build belongs to the downstream experimental channel.
+    ///
+    /// Experimental builds aggressively track upstream and may add or remove features at any time.
+    public static boolean isExperimental() {
+        return "experimental".equals(BUILD_CHANNEL);
+    }
+
     public static boolean isNightly() {
-        return !isStable() && !isDev();
+        return !isStable() && !isDev() && !isExperimental();
     }
 
     public static @Nullable String getSuggestedJavaDownloadLink() {

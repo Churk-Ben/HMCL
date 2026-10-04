@@ -28,12 +28,13 @@ val projectConfig = PropertiesUtils.load(rootProject.file("config/project.proper
 
 val isOfficial = JenkinsUtils.IS_ON_CI || GitHubActionUtils.IS_ON_OFFICIAL_REPO
 
-val versionType = System.getenv("VERSION_TYPE") ?: if (isOfficial) "nightly" else "unofficial"
+val versionType = System.getenv("VERSION_TYPE") ?: if (isOfficial) "nightly" else "experimental"
 val versionRoot = System.getenv("VERSION_ROOT") ?: projectConfig.getProperty("versionRoot") ?: "3"
 
 val releaseChannel = when (versionType) {
     "stable" -> ReleaseType.STABLE
     "dev" -> ReleaseType.DEVELOPMENT
+    "experimental" -> ReleaseType.EXPERIMENTAL
     else -> ReleaseType.NIGHTLY
 }
 val launcherMainClass = "org.jackhuang.hmcl.Launcher"
@@ -56,7 +57,7 @@ if (buildNumber != null) {
     version = when {
         shortCommit.isNullOrBlank() -> "$versionRoot.SNAPSHOT"
         isOfficial -> "$versionRoot.dev-$shortCommit"
-        runNumber != null -> "$versionRoot-$runNumber.uo.$shortCommit"
+        runNumber != null -> "$versionRoot-$runNumber.exp.$shortCommit"
         else -> "$versionRoot.unofficial-$shortCommit"
     }
 }
@@ -172,7 +173,7 @@ val hmclProperties = buildList {
     add("hmcl.curseforge.apikey" to curseForgeApiKey)
     add("hmcl.authlib-injector.version" to libs.authlib.injector.get().version!!)
     add("hmcl.lwjgl-unsafe-agent.version" to libs.lwjgl.unsafe.agent.get().version!!)
-    if (versionType == "unofficial") {
+    if (versionType == "experimental") {
         projectConfig.getProperty("hmcl.update_source.override")?.let { add("hmcl.update_source.override" to it) }
         projectConfig.getProperty("hmcl.manual_update_url")?.let { add("hmcl.manual_update_url" to it) }
     }
