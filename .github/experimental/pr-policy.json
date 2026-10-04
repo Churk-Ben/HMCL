@@ -1,6 +1,7 @@
 {
-  "_comment": "Selection policy for the daily experimental PR aggregation. This file is meant to be edited through normal pull requests. Dimensions are scored independently and combined into a weighted sum over min-max normalised values; add, remove or re-weight entries to change the selection.",
-  "top_n": 20,
+  "_comment": "Ranking policy for the experimental channel. score = value x feasibility. 'value' favours interesting/impactful changes that are likely to land upstream; 'feasibility' down-weights pull requests that overlap the fork's own layers or are stale, because they tend to conflict. Edit through a normal pull request.",
+  "target": 20,
+  "pool_size": 60,
   "include": [],
   "exclude": [],
   "filters": {
@@ -8,31 +9,23 @@
     "require_mergeable": true,
     "exclude_labels": ["in progress"]
   },
-  "dimensions": [
-    {
-      "name": "popularity",
-      "metric": "thumbs_up",
-      "weight": 1.0
-    },
-    {
-      "name": "freshness",
-      "metric": "recent_update",
-      "weight": 0.8
-    },
-    {
-      "name": "approval",
-      "metric": "approved",
-      "weight": 1.5
-    },
-    {
-      "name": "discussion",
-      "metric": "comments",
-      "weight": 0.3
-    },
-    {
-      "name": "size_label",
-      "metric": "size_label",
-      "weight": -0.3
-    }
-  ]
+  "weights": {
+    "category": 1.0,
+    "momentum": 0.8,
+    "popularity": 0.5,
+    "impact": 1.2
+  },
+  "category_scores": {
+    "game crash": 1.0,
+    "bug": 1.0,
+    "backport": 0.95,
+    "enhancement": 0.85
+  },
+  "category_default": 0.3,
+  "feasibility": {
+    "overlap_penalty": 1.0,
+    "staleness_penalty": 0.4,
+    "staleness_days": 30,
+    "floor": 0.05
+  }
 }

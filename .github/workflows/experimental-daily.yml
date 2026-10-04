@@ -4,7 +4,9 @@ name: Experimental Daily
 #   1. start from `experimental` (the stable fork base: community + workflow infra)
 #   2. merge upstream `main`
 #   3. merge every always-on layer from .github/experimental/layers.json
-#   4. aggregate the selected upstream pull requests (conflicts are skipped)
+#   4. try the ranked upstream pull-request pool in order, applying as many as
+#      needed to reach the target (conflicts are retried with i18n union
+#      resolution and a 3-way patch apply, then skipped)
 #   5. build, push the release branch and trigger a release from it
 #
 # `experimental` itself is never modified by this workflow.
@@ -15,9 +17,8 @@ on:
   workflow_dispatch:
     inputs:
       top_n:
-        description: Number of upstream pull requests to aggregate
+        description: Target number of upstream pull requests to apply
         type: number
-        default: 20
       include:
         description: Comma-separated pull request numbers to force include
         type: string
@@ -46,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       branch: ${{ steps.compose.outputs.branch }}
+      applied: ${{ steps.compose.outputs.applied }}
     steps:
       - name: Checkout experimental
         uses: actions/checkout@v6
@@ -62,19 +64,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      - name: Compute layer conflict surface
+        run: |
+          set -euo pipefail
+          git fetch -q origin experimental
+          : > /tmp/conflict-files.txt
+          while IFS= read -r layer; do
+            [ -z "$layer" ] && continue
+            git fetch -q origin "$layer"
+            base="$(git merge-base origin/experimental FETCH_HEAD)"
+            git diff --name-only "$base" FETCH_HEAD >> /tmp/conflict-files.txt || true
+          done < <(jq -r '.layers[]' .github/experimental/layers.json)
+          sort -u -o /tmp/conflict-files.txt /tmp/conflict-files.txt
+          echo "Layer conflict surface: $(wc -l < /tmp/conflict-files.txt) files"
+
       - name: Select upstream pull requests
         id: select
         env:
           GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          python3 .github/scripts/select-prs.py \
-            --policy .github/experimental/pr-policy.json \
-            --top-n "${{ inputs.top_n || 20 }}" \
-            --include "${{ inputs.include }}" \
-            --exclude "${{ inputs.exclude }}" \
-            --github-output "$GITHUB_OUTPUT" \
-            --report selection.md
+          args=(--policy .github/experimental/pr-policy.json
+                --conflict-files /tmp/conflict-files.txt
+                --github-output "$GITHUB_OUTPUT"
+                --report /tmp/selection.md)
+          if [ -n "${{ inputs.include }}" ]; then args+=(--include "${{ inputs.include }}"); fi
+          if [ -n "${{ inputs.exclude }}" ]; then args+=(--exclude "${{ inputs.exclude }}"); fi
+          if [ -n "${{ inputs.top_n }}" ]; then args+=(--target "${{ inputs.top_n }}"); fi
+          python3 .github/scripts/select-prs.py "${args[@]}"
 
       - name: Compose release branch
         id: compose
@@ -82,6 +99,34 @@ jobs:
           GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          target="${{ inputs.top_n }}"
+          [ -z "$target" ] && target="$(jq -r '.target' .github/experimental/pr-policy.json)"
+
+          apply_pr() {
+            pr="$1"
+            # Strategy 1: merge, resolving additive i18n conflicts by union.
+            if git fetch --no-tags -q upstream "pull/$pr/head"; then
+              if git merge --no-edit FETCH_HEAD >/dev/null 2>&1; then
+                return 0
+              fi
+              if python3 .github/scripts/resolve-i18n.py >/dev/null 2>&1 \
+                  && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+                git commit --no-edit >/dev/null 2>&1 && return 0
+              fi
+              git merge --abort >/dev/null 2>&1 || true
+            fi
+            # Strategy 2: apply the pull request diff with 3-way merge.
+            if curl -fsSL "https://github.com/HMCL-dev/HMCL/pull/$pr.diff" -o /tmp/pr.diff 2>/dev/null; then
+              if git apply --3way /tmp/pr.diff >/dev/null 2>&1 \
+                  && [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+                git add -A && git commit -m "Apply #$pr" >/dev/null 2>&1 && return 0
+              fi
+              git reset --hard -q && git clean -fdq
+            fi
+            return 1
+          }
+
           branch="release/$(date -u +%Y%m%d)"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           git switch -c "$branch"
@@ -102,20 +147,23 @@ jobs:
           done < <(jq -r '.layers[]' .github/experimental/layers.json)
           echo "::endgroup::"
 
-          echo "::group::Aggregate upstream pull requests"
+          echo "::group::Aggregate upstream pull requests (target $target)"
           applied=""
           skipped=""
           for pr in $(echo "${{ steps.select.outputs.prs }}" | tr ',' ' '); do
             [ -z "$pr" ] && continue
-            if git fetch --no-tags upstream "pull/$pr/head" && git merge --no-edit FETCH_HEAD; then
+            [ "$(echo $applied | wc -w)" -ge "$target" ] && break
+            if apply_pr "$pr"; then
               applied="$applied $pr"
+              echo "applied #$pr ($(echo $applied | wc -w)/$target)"
             else
-              git merge --abort || true
               skipped="$skipped $pr"
+              echo "skipped #$pr"
             fi
           done
           echo "applied:${applied:- none}"
           echo "skipped:${skipped:- none}"
+          echo "applied=${applied# }" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
           {
@@ -127,7 +175,7 @@ jobs:
             echo
             echo "Skipped upstream pull requests (conflict):${skipped:- none}"
             echo
-            cat selection.md
+            cat /tmp/selection.md
           } > /tmp/release-note.md
 
           git push -u origin --force-with-lease "$branch"
