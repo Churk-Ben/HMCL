@@ -5,7 +5,8 @@ name: Experimental Daily
 #   2. merge upstream `main`
 #   3. merge every always-on layer from .github/experimental/layers.json
 #   4. try the ranked upstream pull-request pool in order, applying as many as
-#      needed to reach the target (conflicts are retried with i18n union
+#      possible up to `max_prs`; if the maximum is not reached, keep going until
+#      every candidate has been tried (conflicts are retried with i18n union
 #      resolution and a 3-way patch apply, then skipped)
 #   5. build, push the release branch and trigger a release from it
 #
@@ -16,8 +17,8 @@ on:
     - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:
-      top_n:
-        description: Target number of upstream pull requests to apply
+      max_prs:
+        description: Maximum number of upstream pull requests to apply
         type: number
       include:
         description: Comma-separated pull request numbers to force include
@@ -91,7 +92,7 @@ jobs:
                 --report-json /tmp/pool.json)
           if [ -n "${{ inputs.include }}" ]; then args+=(--include "${{ inputs.include }}"); fi
           if [ -n "${{ inputs.exclude }}" ]; then args+=(--exclude "${{ inputs.exclude }}"); fi
-          if [ -n "${{ inputs.top_n }}" ]; then args+=(--target "${{ inputs.top_n }}"); fi
+          if [ -n "${{ inputs.max_prs }}" ]; then args+=(--max-prs "${{ inputs.max_prs }}"); fi
           python3 .github/scripts/select-prs.py "${args[@]}"
 
       - name: Compose release branch
@@ -101,8 +102,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          target="${{ inputs.top_n }}"
-          [ -z "$target" ] && target="$(jq -r '.target' .github/experimental/pr-policy.json)"
+          max_prs="${{ inputs.max_prs }}"
+          [ -z "$max_prs" ] && max_prs="$(jq -r '.max_prs' .github/experimental/pr-policy.json)"
 
           apply_pr() {
             pr="$1"
@@ -148,15 +149,15 @@ jobs:
           done < <(jq -r '.layers[]' .github/experimental/layers.json)
           echo "::endgroup::"
 
-          echo "::group::Aggregate upstream pull requests (target $target)"
+          echo "::group::Aggregate upstream pull requests (max $max_prs)"
           applied=""
           skipped=""
           for pr in $(echo "${{ steps.select.outputs.prs }}" | tr ',' ' '); do
             [ -z "$pr" ] && continue
-            [ "$(echo $applied | wc -w)" -ge "$target" ] && break
+            [ "$(echo $applied | wc -w)" -ge "$max_prs" ] && break
             if apply_pr "$pr"; then
               applied="$applied $pr"
-              echo "applied #$pr ($(echo $applied | wc -w)/$target)"
+              echo "applied #$pr ($(echo $applied | wc -w)/$max_prs)"
             else
               skipped="$skipped $pr"
               echo "skipped #$pr"

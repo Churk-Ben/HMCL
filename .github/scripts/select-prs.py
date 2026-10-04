@@ -145,7 +145,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", required=True, type=Path)
     parser.add_argument("--repo", default="HMCL-dev/HMCL")
-    parser.add_argument("--target", type=int, help="Override the intended number of applied pull requests")
+    parser.add_argument("--max-prs", type=int, help="Maximum number of pull requests to apply")
     parser.add_argument("--pool-size", type=int, help="Override the ranked pool size")
     parser.add_argument("--include", default="")
     parser.add_argument("--exclude", default="")
@@ -159,8 +159,8 @@ def main() -> int:
 
     policy = json.loads(args.policy.read_text(encoding="utf-8"))
     owner, _, name = args.repo.partition("/")
-    target = args.target or int(policy.get("target", 20))
-    pool_size = args.pool_size or int(policy.get("pool_size", max(target * 3, target + 30)))
+    max_prs = args.max_prs or int(policy.get("max_prs", 60))
+    pool_size = args.pool_size or int(policy.get("pool_size", 200))
 
     include = {int(x) for x in (args.include or ",".join(map(str, policy.get("include", [])))).split(",") if x.strip()}
     exclude = {int(x) for x in (args.exclude or ",".join(map(str, policy.get("exclude", [])))).split(",") if x.strip()}
@@ -227,7 +227,7 @@ def main() -> int:
     rest = [pr for pr in scored if pr["number"] not in include]
     pool = (includes + rest)[:pool_size]
 
-    lines = [f"# Experimental PR pool (target {target}, pool {pool_size})", "", "| PR | Score | Labels | Value signals |", "| --- | --- | --- | --- |"]
+    lines = [f"# Experimental PR pool (max {max_prs}, pool {pool_size})", "", "| PR | Score | Labels | Value signals |", "| --- | --- | --- | --- |"]
     for pr in pool:
         labels = ",".join(sorted(label_names(pr)))
         lines.append(f"| [#{pr['number']}]({pr['url']}) | {pr['_score']:.3f} | {labels or '-'} | {pr['_message']} |")
@@ -240,7 +240,7 @@ def main() -> int:
         args.report.write_text(report, encoding="utf-8")
     if args.report_json:
         payload = {
-            "target": target,
+            "max_prs": max_prs,
             "pool_size": pool_size,
             "applied_pool": [
                 {

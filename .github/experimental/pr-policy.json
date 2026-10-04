@@ -1,7 +1,7 @@
 {
   "_comment": "Ranking policy for the experimental channel. score = value x feasibility. 'value' favours interesting/impactful changes that are likely to land upstream; 'feasibility' down-weights pull requests that overlap the fork's own layers or are stale, because they tend to conflict. Edit through a normal pull request.",
-  "target": 20,
-  "pool_size": 60,
+  "max_prs": 60,
+  "pool_size": 200,
   "include": [],
   "exclude": [],
   "filters": {
