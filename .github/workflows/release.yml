@@ -2,6 +2,11 @@ name: Create Release
 
 on:
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: Mark the fork release as a prerelease
+        type: boolean
+        default: false
 #  schedule:
 #    - cron: '30 * * * *'
 
@@ -14,6 +19,7 @@ jobs:
     uses: ./.github/workflows/gradle.yml
     with:
       publish_release: true
+      prerelease: ${{ inputs.prerelease }}
     secrets: inherit
 
   check-update:

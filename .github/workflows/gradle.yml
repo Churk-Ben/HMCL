@@ -8,14 +8,21 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish an unofficial prerelease in this fork
+        description: Publish an unofficial release in this fork
         type: boolean
         default: false
+      prerelease:
+        description: Mark the fork release as a prerelease
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       publish_release:
         type: boolean
         default: false
+      prerelease:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -87,14 +94,14 @@ jobs:
         version="${filename#HMCL-}"
         echo "version=$version" >> "$GITHUB_OUTPUT"
         mkdir -p HMCL/build/release
-        for extension in jar exe sh deb; do
+        for extension in jar exe sh deb rpm; do
           artifact="HMCL/build/libs/$filename.$extension"
           checksum="$(tr -d '\r\n' < "$artifact.sha256")"
           printf '%s  %s\n' "$checksum" "$artifact" | sha256sum --check
           cp "$artifact" "$artifact.sha256" HMCL/build/release/
         done
         cd HMCL/build/release
-        sha256sum -- *.jar *.exe *.sh *.deb > SHA256SUMS
+        sha256sum -- *.jar *.exe *.sh *.deb *.rpm > SHA256SUMS
     - name: Upload release bundle
       uses: actions/upload-artifact@v7
       with:
@@ -105,9 +112,29 @@ jobs:
     outputs:
       version: ${{ steps.bundle.outputs.version }}
 
+  check-modern:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up JDK 25
+      uses: actions/setup-java@v5
+      with:
+        distribution: 'temurin'
+        java-version: '25'
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v5
+      with:
+        cache-cleanup: never
+    - name: Check with JavaFX 27
+      run: xvfb-run --auto-servernum ./gradlew check --no-daemon --parallel
+      env:
+        JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
+        MICROSOFT_AUTH_ID: ${{ secrets.MICROSOFT_AUTH_ID }}
+        CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+
   release:
     if: github.repository_owner != 'HMCL-dev' && github.event_name == 'workflow_dispatch' && inputs.publish_release
-    needs: build
+    needs: [build, check-modern]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -131,11 +158,17 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GH_REPO: ${{ github.repository }}
         RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        RELEASE_PRERELEASE: ${{ inputs.prerelease }}
       run: |
         set -euo pipefail
         tag="v$RELEASE_VERSION"
+        latest=true
+        if [[ "$RELEASE_PRERELEASE" == true ]]; then
+          latest=false
+        fi
         {
           printf 'Unofficial HMCL build from `%s`.\n\n' "$GITHUB_REF_NAME"
+          printf 'Includes RPM packaging and JavaFX 27 for Java 25 or newer.\n\n'
           printf 'Commit: [%s](https://github.com/%s/commit/%s)\n\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
           printf 'Build: https://github.com/%s/actions/runs/%s\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           printf 'SHA-256 checksums:\n\n```text\n'
@@ -144,11 +177,13 @@ jobs:
         } > "$RUNNER_TEMP/RELEASE_NOTE.md"
         if gh release view "$tag" > /dev/null 2>&1; then
           gh release upload "$tag" HMCL-* SHA256SUMS --clobber
+          gh release edit "$tag" --prerelease="$RELEASE_PRERELEASE" --latest="$latest" \
+            --notes-file "$RUNNER_TEMP/RELEASE_NOTE.md"
         else
           gh release create "$tag" HMCL-* SHA256SUMS \
             --target "$GITHUB_SHA" \
             --title "HMCL $RELEASE_VERSION" \
             --notes-file "$RUNNER_TEMP/RELEASE_NOTE.md" \
-            --prerelease --latest=false
+            --prerelease="$RELEASE_PRERELEASE" --latest="$latest"
         fi
         gh release view "$tag" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

@@ -49,6 +49,8 @@ import org.jackhuang.hmcl.util.io.IOUtils;
 import org.jackhuang.hmcl.java.JavaRuntime;
 import org.jackhuang.hmcl.util.io.JarUtils;
 import org.jackhuang.hmcl.util.platform.Platform;
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
 import java.awt.*;
@@ -72,8 +74,11 @@ import static org.jackhuang.hmcl.util.logging.Logger.LOG;
 import static org.jackhuang.hmcl.util.i18n.I18n.i18n;
 
 // From: https://github.com/Col-E/Recaf/blob/7378b397cee664ae81b7963b0355ef8ff013c3a7/src/main/java/me/coley/recaf/util/self/SelfDependencyPatcher.java
+/// Downloads missing JavaFX modules, verifies their checksums, and adds them at startup.
+@NotNullByDefault
 public final class SelfDependencyPatcher {
-    private final List<DependencyDescriptor> dependencies = DependencyDescriptor.readDependencies();
+    /// JavaFX dependencies for the current platform, or null when it is unsupported.
+    private final @Nullable List<DependencyDescriptor> dependencies = DependencyDescriptor.readDependencies();
     private final List<Repository> repositories;
     private final Repository defaultRepository;
     private final byte[] buffer = new byte[IOUtils.DEFAULT_BUFFER_SIZE];
@@ -100,21 +105,24 @@ public final class SelfDependencyPatcher {
         }
     }
 
+    /// Metadata used to download and verify a JavaFX module for the current platform.
     private static final class DependencyDescriptor {
         private static final String DEPENDENCIES_LIST_FILE = "/assets/openjfx-dependencies.json";
         private static final Path DEPENDENCIES_DIR_PATH = Metadata.DEPENDENCIES_DIRECTORY.resolve(Platform.CURRENT_PLATFORM.toString()).resolve("openjfx");
 
-        static List<DependencyDescriptor> readDependencies() {
+        /// Selects JavaFX 27 on Java 25 or newer, otherwise the classic channel.
+        /// Returns null when no dependencies are available for the current platform.
+        static @Nullable List<DependencyDescriptor> readDependencies() {
             //noinspection ConstantConditions
             try (Reader reader = new InputStreamReader(SelfDependencyPatcher.class.getResourceAsStream(DEPENDENCIES_LIST_FILE), UTF_8)) {
                 Map<String, Map<String, List<DependencyDescriptor>>> allDependencies =
-                        JsonUtils.GSON.fromJson(reader, mapTypeOf(String.class, mapTypeOf(String.class, listTypeOf(DependencyDescriptor.class))));
-                Map<String, List<DependencyDescriptor>> platform = allDependencies.get(Platform.CURRENT_PLATFORM.toString());
+                        Objects.requireNonNull(JsonUtils.GSON.fromJson(reader, mapTypeOf(String.class, mapTypeOf(String.class, listTypeOf(DependencyDescriptor.class)))));
+                @Nullable Map<String, List<DependencyDescriptor>> platform = allDependencies.get(Platform.CURRENT_PLATFORM.toString());
                 if (platform == null)
                     return null;
 
-                if (JavaRuntime.CURRENT_VERSION >= 23) {
-                    List<DependencyDescriptor> modernDependencies = platform.get("modern");
+                if (JavaRuntime.CURRENT_VERSION >= 25) {
+                    @Nullable List<DependencyDescriptor> modernDependencies = platform.get("modern");
                     if (modernDependencies != null)
                         return modernDependencies;
                 }
