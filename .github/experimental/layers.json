@@ -1,6 +1,8 @@
 {
-  "_comment": "Always-on layers merged into every release branch, on top of `experimental`, before the daily upstream pull requests are aggregated. Each entry is a branch name. To drop a feature, remove its layer here (and close/delete the corresponding pull request).",
+  "_comment": "Always-on layers merged into every release branch on top of `experimental`, before the daily upstream pull requests are aggregated. Each entry is a branch name and should be an open pull request against `experimental`. To drop a feature, remove its layer here and close the corresponding pull request.",
   "layers": [
+    "pr/use-system-decoration-as-default",
+    "pr/rpm-packaging",
     "pr/experimental-channel"
   ]
 }
