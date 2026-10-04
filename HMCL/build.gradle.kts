@@ -30,6 +30,14 @@ val isOfficial = JenkinsUtils.IS_ON_CI || GitHubActionUtils.IS_ON_OFFICIAL_REPO
 val versionType = System.getenv("VERSION_TYPE") ?: if (isOfficial) "nightly" else "unofficial"
 val versionRoot = System.getenv("VERSION_ROOT") ?: projectConfig.getProperty("versionRoot") ?: "3"
 
+/// Release channel used by the Linux packagers, shared by all package formats.
+val releaseChannel = when (versionType) {
+    "stable" -> ReleaseType.STABLE
+    "dev" -> ReleaseType.DEVELOPMENT
+    else -> ReleaseType.NIGHTLY
+}
+val launcherMainClass = "org.jackhuang.hmcl.Launcher"
+
 val microsoftAuthId = System.getenv("MICROSOFT_AUTH_ID") ?: ""
 val curseForgeApiKey = System.getenv("CURSEFORGE_API_KEY") ?: ""
 
@@ -292,15 +300,9 @@ val makeDeb = tasks.register("makeDeb", CreateDeb::class) {
 
     val debFile = layout.file(provider { artifactFile("deb") })
 
-    val debChannel = when (versionType) {
-        "stable" -> ReleaseType.STABLE
-        "dev" -> ReleaseType.DEVELOPMENT
-        else -> ReleaseType.NIGHTLY
-    }
-
     version.set(project.version.toString())
-    releaseType.set(debChannel)
-    launcherClassName.set("org.jackhuang.hmcl.Launcher")
+    releaseType.set(releaseChannel)
+    launcherClassName.set(launcherMainClass)
     appShFile.set(layout.file(provider { artifactFile("sh") }))
     iconFile.set(layout.projectDirectory.file("image/hmcl.png"))
     outputFile.set(debFile)

@@ -1,0 +1,38 @@
+{
+  "_comment": "Selection policy for the daily experimental PR aggregation. This file is meant to be edited through normal pull requests. Dimensions are scored independently and combined into a weighted sum over min-max normalised values; add, remove or re-weight entries to change the selection.",
+  "top_n": 20,
+  "include": [],
+  "exclude": [],
+  "filters": {
+    "exclude_drafts": true,
+    "require_mergeable": true,
+    "exclude_labels": ["in progress"]
+  },
+  "dimensions": [
+    {
+      "name": "popularity",
+      "metric": "thumbs_up",
+      "weight": 1.0
+    },
+    {
+      "name": "freshness",
+      "metric": "recent_update",
+      "weight": 0.8
+    },
+    {
+      "name": "approval",
+      "metric": "approved",
+      "weight": 1.5
+    },
+    {
+      "name": "discussion",
+      "metric": "comments",
+      "weight": 0.3
+    },
+    {
+      "name": "size_label",
+      "metric": "size_label",
+      "weight": -0.3
+    }
+  ]
+}
