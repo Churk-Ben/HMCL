@@ -33,7 +33,6 @@ import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.TaskAction;
-import org.jackhuang.hmcl.gradle.utils.DigestUtils;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -50,6 +49,7 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -111,7 +111,8 @@ public abstract class TerracottaConfigUpgradeTask extends DefaultTask {
         }
 
         Map<String, Bundle> bundles = new LinkedHashMap<>();
-        MessageDigest digest = DigestUtils.newDigest("SHA-512");
+        MessageDigest digest = MessageDigest.getInstance("SHA-512");
+        HexFormat hexFormat = HexFormat.of();
 
         for (Map.Entry<String, Path> entry : files.entrySet()) {
             String classifier = entry.getKey();
@@ -122,7 +123,7 @@ public abstract class TerracottaConfigUpgradeTask extends DefaultTask {
                 is.transferTo(os);
             }
 
-            String bundleHash = DigestUtils.toHex(digest.digest());
+            String bundleHash = hexFormat.formatHex(digest.digest());
 
             Map<String, String> bundleContents = new LinkedHashMap<>();
             try (TarArchiveReader reader = new TarArchiveReader(decompressedBundle)) {
@@ -141,7 +142,7 @@ public abstract class TerracottaConfigUpgradeTask extends DefaultTask {
                     try (InputStream is = new DigestInputStream(reader.getInputStream(archiveEntry), digest)) {
                         is.transferTo(OutputStream.nullOutputStream());
                     }
-                    String hash = DigestUtils.toHex(digest.digest());
+                    String hash = hexFormat.formatHex(digest.digest());
 
                     bundleContents.put(name, hash);
                 }

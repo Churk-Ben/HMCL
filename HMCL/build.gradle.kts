@@ -316,7 +316,10 @@ val makeRpm = tasks.register("makeRpm", CreateRpm::class) {
     dependsOn(makeExecutables)
 
     val rpmFile = layout.file(provider { artifactFile("rpm") })
-    val rpmBuildTimestamp = providers.environmentVariable("SOURCE_DATE_EPOCH").map { it.toLong() }
+    val rpmBuildTimestamp = providers.environmentVariable("SOURCE_DATE_EPOCH")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { it.toLong() }
 
     version.set(project.version.toString())
     releaseType.set(releaseChannel)

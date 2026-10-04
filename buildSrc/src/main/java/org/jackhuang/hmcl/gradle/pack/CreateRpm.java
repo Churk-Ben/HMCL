@@ -31,7 +31,6 @@ import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.TaskAction;
-import org.jackhuang.hmcl.gradle.utils.DigestUtils;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -42,9 +41,12 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -252,6 +254,9 @@ public abstract class CreateRpm extends DefaultTask {
         long buildTime = getBuildTimestamp().isPresent()
                 ? getBuildTimestamp().get()
                 : Instant.now().getEpochSecond();
+        if (buildTime < 0 || buildTime > Integer.MAX_VALUE)
+            throw new GradleException("RPM build timestamp is outside the supported 32-bit range: " + buildTime);
+
         String packageVersion = sanitizeVersion(getVersion().get());
         String packageRelease = "1";
         LinuxPackageFiles linuxFiles = new LinuxPackageFiles(
@@ -371,7 +376,7 @@ public abstract class CreateRpm extends DefaultTask {
             fileSizes[i] = file.content().length;
             fileModes[i] = file.mode();
             fileMtimes[i] = (int) file.mtime();
-            fileDigests[i] = isRegularFile(file.mode()) ? DigestUtils.hexDigest("SHA-256", file.content()) : "";
+            fileDigests[i] = isRegularFile(file.mode()) ? sha256(file.content()) : "";
             fileLinkTos[i] = "";
             fileUserNames[i] = "root";
             fileGroupNames[i] = "root";
@@ -420,9 +425,9 @@ public abstract class CreateRpm extends DefaultTask {
         header.putString(TAG_PAYLOAD_FLAGS, "9");
         header.putInt32(TAG_FILE_DIGEST_ALGO, DIGEST_ALGO_SHA256);
         header.putString(TAG_ENCODING, "utf-8");
-        header.putStringArray(TAG_PAYLOAD_DIGEST, new String[]{DigestUtils.hexDigest("SHA-256", payload)});
+        header.putStringArray(TAG_PAYLOAD_DIGEST, new String[]{sha256(payload)});
         header.putInt32(TAG_PAYLOAD_DIGEST_ALGO, DIGEST_ALGO_SHA256);
-        header.putStringArray(TAG_PAYLOAD_DIGEST_ALT, new String[]{DigestUtils.hexDigest("SHA-256", cpio)});
+        header.putStringArray(TAG_PAYLOAD_DIGEST_ALT, new String[]{sha256(cpio)});
 
         return header.build();
     }
@@ -430,10 +435,10 @@ public abstract class CreateRpm extends DefaultTask {
     /// Builds the signature header carrying the size and digest information.
     private static byte[] createSignature(byte[] header, byte[] payload, int archiveSize) throws IOException {
         RpmHeader signature = new RpmHeader(SIGNATURE_REGION_TAG);
-        signature.putString(SIG_SHA1, DigestUtils.hexDigest("SHA-1", header));
-        signature.putString(SIG_SHA256, DigestUtils.hexDigest("SHA-256", header));
+        signature.putString(SIG_SHA1, sha1(header));
+        signature.putString(SIG_SHA256, sha256(header));
         signature.putInt32(SIG_SIZE, header.length + payload.length);
-        signature.putBin(SIG_MD5, DigestUtils.digest("MD5", header, payload));
+        signature.putBin(SIG_MD5, md5(header, payload));
         signature.putInt32(SIG_PAYLOAD_SIZE, archiveSize);
 
         byte[] bytes = signature.build();
@@ -510,6 +515,41 @@ public abstract class CreateRpm extends DefaultTask {
             }
         }
         return result.toString();
+    }
+
+    /// Returns the lowercase hexadecimal SHA-1 digest of `data`.
+    private static String sha1(byte @Unmodifiable [] data) {
+        return HexFormat.of().formatHex(digest("SHA-1", data));
+    }
+
+    /// Returns the lowercase hexadecimal SHA-256 digest of `data`.
+    private static String sha256(byte @Unmodifiable [] data) {
+        return HexFormat.of().formatHex(digest("SHA-256", data));
+    }
+
+    /// Returns the raw MD5 digest of the concatenation of `first` and `second`.
+    ///
+    /// The digest is fed incrementally so the two inputs are never copied into a
+    /// single buffer, which matters because the payload can be several megabytes.
+    private static byte @Unmodifiable [] md5(byte @Unmodifiable [] first, byte @Unmodifiable [] second) {
+        MessageDigest digest = newDigest("MD5");
+        digest.update(first);
+        digest.update(second);
+        return digest.digest();
+    }
+
+    /// Computes a message digest over `data`.
+    private static byte @Unmodifiable [] digest(String algorithm, byte @Unmodifiable [] data) {
+        return newDigest(algorithm).digest(data);
+    }
+
+    /// Creates a message digest, wrapping the checked exception that cannot occur.
+    private static MessageDigest newDigest(String algorithm) {
+        try {
+            return MessageDigest.getInstance(algorithm);
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError("Unsupported digest algorithm: " + algorithm, e);
+        }
     }
 
     /// One artifact installed by the package.
