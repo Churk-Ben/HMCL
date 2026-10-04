@@ -142,6 +142,8 @@ public abstract class CreateRpm extends DefaultTask {
     private static final int TAG_FILE_GROUPNAMES = 1040;
     /// RPM header tag for the originating source package.
     private static final int TAG_SOURCE_RPM = 1044;
+    /// RPM header tag for the per-file verification flags.
+    private static final int TAG_FILE_VERIFY_FLAGS = 1045;
     /// RPM header tag for the capabilities provided by the package.
     private static final int TAG_PROVIDE_NAMES = 1047;
     /// RPM header tag for the RPM version used to build the package.
@@ -190,6 +192,9 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Identifier of the SHA-256 digest algorithm in RPM metadata.
     private static final int DIGEST_ALGO_SHA256 = 8;
+
+    /// RPM mask enabling all supported file verification checks.
+    private static final int VERIFY_ALL = ~0;
 
     /// RPM sense flag marking a versioned, equal capability.
     private static final int SENSE_EQUAL = 8;
@@ -355,6 +360,7 @@ public abstract class CreateRpm extends DefaultTask {
         int[] fileSizes = new int[fileCount];
         int[] fileModes = new int[fileCount];
         int[] fileMtimes = new int[fileCount];
+        int[] fileVerifyFlags = new int[fileCount];
         String[] fileDigests = new String[fileCount];
         String[] fileLinkTos = new String[fileCount];
         String[] fileUserNames = new String[fileCount];
@@ -376,6 +382,7 @@ public abstract class CreateRpm extends DefaultTask {
             fileSizes[i] = file.content().length;
             fileModes[i] = file.mode();
             fileMtimes[i] = (int) file.mtime();
+            fileVerifyFlags[i] = VERIFY_ALL;
             fileDigests[i] = isRegularFile(file.mode()) ? sha256(file.content()) : "";
             fileLinkTos[i] = "";
             fileUserNames[i] = "root";
@@ -413,6 +420,7 @@ public abstract class CreateRpm extends DefaultTask {
         header.putStringArray(TAG_FILE_USERNAMES, fileUserNames);
         header.putStringArray(TAG_FILE_GROUPNAMES, fileGroupNames);
         header.putString(TAG_SOURCE_RPM, "%s-%s-%s.src.rpm".formatted(packageName, packageVersion, packageRelease));
+        header.putInt32(TAG_FILE_VERIFY_FLAGS, fileVerifyFlags);
         header.putStringArray(TAG_PROVIDE_NAMES, new String[]{packageName});
         header.putInt32(TAG_PROVIDE_FLAGS, SENSE_EQUAL);
         header.putStringArray(TAG_PROVIDE_VERSIONS, new String[]{provideVersion});
@@ -476,8 +484,11 @@ public abstract class CreateRpm extends DefaultTask {
                 #!/bin/sh
                 if command -v update-alternatives >/dev/null 2>&1; then
                     update-alternatives --install %s hmcl %s %d
+                elif command -v alternatives >/dev/null 2>&1; then
+                    alternatives --install %s hmcl %s %d
                 fi
                 """.formatted(LinuxPackageFiles.COMMON_LAUNCHER_PATH, linuxFiles.launcherPath(),
+                alternativesPriority, LinuxPackageFiles.COMMON_LAUNCHER_PATH, linuxFiles.launcherPath(),
                 alternativesPriority);
     }
 
@@ -485,10 +496,14 @@ public abstract class CreateRpm extends DefaultTask {
     private static String getPreUninstall(LinuxPackageFiles linuxFiles) {
         return """
                 #!/bin/sh
-                if [ "$1" = 0 ] && command -v update-alternatives >/dev/null 2>&1; then
-                    update-alternatives --remove hmcl %s
+                if [ "$1" = 0 ]; then
+                    if command -v update-alternatives >/dev/null 2>&1; then
+                        update-alternatives --remove hmcl %s
+                    elif command -v alternatives >/dev/null 2>&1; then
+                        alternatives --remove hmcl %s
+                    fi
                 fi
-                """.formatted(linuxFiles.launcherPath());
+                """.formatted(linuxFiles.launcherPath(), linuxFiles.launcherPath());
     }
 
     /// Returns whether the mode describes a regular file, as opposed to a directory.
