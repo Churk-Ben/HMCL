@@ -8,6 +8,7 @@ import org.jackhuang.hmcl.gradle.l10n.SyncTranslations
 import org.jackhuang.hmcl.gradle.l10n.UpsideDownTranslate
 import org.jackhuang.hmcl.gradle.mod.ParseModDataTask
 import org.jackhuang.hmcl.gradle.pack.CreateDeb
+import org.jackhuang.hmcl.gradle.pack.CreateRpm
 import org.jackhuang.hmcl.gradle.pack.ReleaseType
 import org.jackhuang.hmcl.gradle.utils.PropertiesUtils
 import java.net.URI
@@ -29,6 +30,13 @@ val isOfficial = JenkinsUtils.IS_ON_CI || GitHubActionUtils.IS_ON_OFFICIAL_REPO
 
 val versionType = System.getenv("VERSION_TYPE") ?: if (isOfficial) "nightly" else "unofficial"
 val versionRoot = System.getenv("VERSION_ROOT") ?: projectConfig.getProperty("versionRoot") ?: "3"
+
+val releaseChannel = when (versionType) {
+    "stable" -> ReleaseType.STABLE
+    "dev" -> ReleaseType.DEVELOPMENT
+    else -> ReleaseType.NIGHTLY
+}
+val launcherMainClass = "org.jackhuang.hmcl.Launcher"
 
 val microsoftAuthId = System.getenv("MICROSOFT_AUTH_ID") ?: ""
 val curseForgeApiKey = System.getenv("CURSEFORGE_API_KEY") ?: ""
@@ -292,15 +300,9 @@ val makeDeb = tasks.register("makeDeb", CreateDeb::class) {
 
     val debFile = layout.file(provider { artifactFile("deb") })
 
-    val debChannel = when (versionType) {
-        "stable" -> ReleaseType.STABLE
-        "dev" -> ReleaseType.DEVELOPMENT
-        else -> ReleaseType.NIGHTLY
-    }
-
     version.set(project.version.toString())
-    releaseType.set(debChannel)
-    launcherClassName.set("org.jackhuang.hmcl.Launcher")
+    releaseType.set(releaseChannel)
+    launcherClassName.set(launcherMainClass)
     appShFile.set(layout.file(provider { artifactFile("sh") }))
     iconFile.set(layout.projectDirectory.file("image/hmcl.png"))
     outputFile.set(debFile)
@@ -310,9 +312,32 @@ val makeDeb = tasks.register("makeDeb", CreateDeb::class) {
     }
 }
 
+val makeRpm = tasks.register("makeRpm", CreateRpm::class) {
+    dependsOn(makeExecutables)
+
+    val rpmFile = layout.file(provider { artifactFile("rpm") })
+    val rpmBuildTimestamp = providers.environmentVariable("SOURCE_DATE_EPOCH")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { it.toLong() }
+
+    version.set(project.version.toString())
+    releaseType.set(releaseChannel)
+    launcherClassName.set(launcherMainClass)
+    buildTimestamp.set(rpmBuildTimestamp)
+    appShFile.set(layout.file(provider { artifactFile("sh") }))
+    iconFile.set(layout.projectDirectory.file("image/hmcl.png"))
+    outputFile.set(rpmFile)
+
+    doLast {
+        createChecksum(rpmFile.get().asFile)
+    }
+}
+
 tasks.build {
     dependsOn(makeExecutables)
     dependsOn(makeDeb)
+    dependsOn(makeRpm)
 }
 
 fun parseToolOptions(options: String?): MutableList<String> {
