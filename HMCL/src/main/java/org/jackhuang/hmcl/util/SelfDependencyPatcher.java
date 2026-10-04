@@ -260,17 +260,18 @@ public final class SelfDependencyPatcher {
         JavaFXPatcher.patch(modules, jars, addOpens != null ? addOpens.split(" ") : new String[0]);
     }
 
-    /**
-     * Download dependencies.
-     *
-     * @throws IOException When the files cannot be fetched or saved.
-     */
+    /// Downloads dependencies, automatically trying the configured repositories in order.
+    ///
+    /// Progress is retained across repository switches so already downloaded dependencies are not fetched again.
+    ///
+    /// @throws IOException When the files cannot be fetched or saved from any repository
     private void fetchDependencies(List<DependencyDescriptor> dependencies) throws IOException {
         SwingUtils.initLookAndFeel();
 
         boolean isFirstTime = true;
 
-        Repository repository = defaultRepository;
+        List<Repository> order = repositoryOrder(defaultRepository);
+        Repository repository = order.get(0);
 
         int count = 0;
         while (true) {
@@ -342,14 +343,40 @@ public final class SelfDependencyPatcher {
                 dialog.dispose();
                 if (showDetails.get()) {
                     repository = showChooseRepositoryDialog();
+                    order = repositoryOrder(repository);
                     continue;
                 } else {
                     throw e;
                 }
+            } catch (IOException e) {
+                dialog.dispose();
+                int index = order.indexOf(repository);
+                if (index + 1 >= order.size()) {
+                    throw e;
+                }
+                Repository failed = repository;
+                repository = order.get(index + 1);
+                LOG.warning("Failed to download JavaFX from " + failed.name() + ", trying " + repository.name(), e);
+                continue;
             }
             dialog.dispose();
             return;
         }
+    }
+
+    /// Builds the repository attempt order, starting with `first` followed by the remaining configured repositories.
+    ///
+    /// @param first the repository to try first
+    /// @return the ordered repositories, each occurring at most once
+    private List<Repository> repositoryOrder(Repository first) {
+        List<Repository> order = new ArrayList<>(repositories.size() + 1);
+        order.add(first);
+        for (Repository repository : repositories) {
+            if (repository != first) {
+                order.add(repository);
+            }
+        }
+        return order;
     }
 
     private List<DependencyDescriptor> checkMissingDependencies() {
