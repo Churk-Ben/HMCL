@@ -9,6 +9,13 @@ permissions:
   contents: write
 
 jobs:
+  build-fork:
+    if: ${{ github.repository_owner != 'HMCL-dev' }}
+    uses: ./.github/workflows/gradle.yml
+    with:
+      publish_release: true
+    secrets: inherit
+
   check-update:
     if: ${{ github.repository_owner == 'HMCL-dev' }}
     strategy:

@@ -5,6 +5,20 @@ on:
   pull_request:
     paths-ignore:
       - '**.md'
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Publish an unofficial prerelease in this fork
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      publish_release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -55,3 +69,80 @@ jobs:
         name: HMCL-${{ env.SHORT_SHA }}-deb
         path: HMCL/build/libs/HMCL-*.deb
         archive: false
+    - name: Prepare release bundle
+      id: bundle
+      shell: bash
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        jars=(HMCL/build/libs/HMCL-*.jar)
+        [[ ${#jars[@]} -eq 1 ]]
+        filename="$(basename "${jars[0]}" .jar)"
+        version="${filename#HMCL-}"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        mkdir -p HMCL/build/release
+        for extension in jar exe sh deb; do
+          artifact="HMCL/build/libs/$filename.$extension"
+          checksum="$(tr -d '\r\n' < "$artifact.sha256")"
+          printf '%s  %s\n' "$checksum" "$artifact" | sha256sum --check
+          cp "$artifact" "$artifact.sha256" HMCL/build/release/
+        done
+        cd HMCL/build/release
+        sha256sum -- *.jar *.exe *.sh *.deb > SHA256SUMS
+    - name: Upload release bundle
+      uses: actions/upload-artifact@v7
+      with:
+        name: HMCL-${{ env.SHORT_SHA }}-release
+        path: HMCL/build/release/*
+        if-no-files-found: error
+
+    outputs:
+      version: ${{ steps.bundle.outputs.version }}
+
+  release:
+    if: github.repository_owner != 'HMCL-dev' && github.event_name == 'workflow_dispatch' && inputs.publish_release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: fork-release-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+    - name: Download release bundle
+      uses: actions/download-artifact@v8
+      with:
+        pattern: HMCL-*-release
+        merge-multiple: true
+        path: release
+    - name: Verify release bundle
+      working-directory: release
+      run: sha256sum --check SHA256SUMS
+    - name: Create unofficial release
+      working-directory: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+        RELEASE_VERSION: ${{ needs.build.outputs.version }}
+      run: |
+        set -euo pipefail
+        tag="v$RELEASE_VERSION"
+        {
+          printf 'Unofficial HMCL build from `%s`.\n\n' "$GITHUB_REF_NAME"
+          printf 'Commit: [%s](https://github.com/%s/commit/%s)\n\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          printf 'Build: https://github.com/%s/actions/runs/%s\n\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          printf 'SHA-256 checksums:\n\n```text\n'
+          cat SHA256SUMS
+          printf '```\n'
+        } > "$RUNNER_TEMP/RELEASE_NOTE.md"
+        if gh release view "$tag" > /dev/null 2>&1; then
+          gh release upload "$tag" HMCL-* SHA256SUMS --clobber
+        else
+          gh release create "$tag" HMCL-* SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "HMCL $RELEASE_VERSION" \
+            --notes-file "$RUNNER_TEMP/RELEASE_NOTE.md" \
+            --prerelease --latest=false
+        fi
+        gh release view "$tag" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
