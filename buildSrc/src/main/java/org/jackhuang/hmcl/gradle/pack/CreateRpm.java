@@ -31,20 +31,20 @@ import org.gradle.api.tasks.InputFile;
 import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.TaskAction;
+import org.jackhuang.hmcl.gradle.utils.DigestUtils;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.HexFormat;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -128,24 +128,18 @@ public abstract class CreateRpm extends DefaultTask {
     private static final int TAG_FILE_SIZES = 1028;
     /// RPM header tag for the per-file modes.
     private static final int TAG_FILE_MODES = 1030;
-    /// RPM header tag for the per-file device numbers.
-    private static final int TAG_FILE_RDEVS = 1033;
     /// RPM header tag for the per-file modification times.
     private static final int TAG_FILE_MTIMES = 1034;
     /// RPM header tag for the per-file digests.
     private static final int TAG_FILE_DIGESTS = 1035;
     /// RPM header tag for the per-file symlink targets.
     private static final int TAG_FILE_LINKTOS = 1036;
-    /// RPM header tag for the per-file flags.
-    private static final int TAG_FILE_FLAGS = 1037;
     /// RPM header tag for the per-file owner names.
     private static final int TAG_FILE_USERNAMES = 1039;
     /// RPM header tag for the per-file group names.
     private static final int TAG_FILE_GROUPNAMES = 1040;
     /// RPM header tag for the originating source package.
     private static final int TAG_SOURCE_RPM = 1044;
-    /// RPM header tag for the per-file verification flags.
-    private static final int TAG_FILE_VERIFY_FLAGS = 1045;
     /// RPM header tag for the capabilities provided by the package.
     private static final int TAG_PROVIDE_NAMES = 1047;
     /// RPM header tag for the RPM version used to build the package.
@@ -154,12 +148,6 @@ public abstract class CreateRpm extends DefaultTask {
     private static final int TAG_POST_IN_PROG = 1086;
     /// RPM header tag for the pre-uninstall scriptlet interpreter.
     private static final int TAG_PRE_UN_PROG = 1087;
-    /// RPM header tag for the per-file device identifiers.
-    private static final int TAG_FILE_DEVICES = 1095;
-    /// RPM header tag for the per-file inode numbers.
-    private static final int TAG_FILE_INODES = 1096;
-    /// RPM header tag for the per-file languages.
-    private static final int TAG_FILE_LANGS = 1097;
     /// RPM header tag for the provide flags.
     private static final int TAG_PROVIDE_FLAGS = 1112;
     /// RPM header tag for the provide versions.
@@ -321,8 +309,9 @@ public abstract class CreateRpm extends DefaultTask {
         try (CpioArchiveOutputStream output = new CpioArchiveOutputStream(buffer, CpioConstants.FORMAT_NEW)) {
             long inode = 1;
             for (RpmFile file : files) {
-                String name = "./" + (file.path().startsWith("/") ? file.path().substring(1) : file.path());
-                CpioArchiveEntry entry = new CpioArchiveEntry(CpioConstants.FORMAT_NEW, name, file.content().length);
+                // RpmFile paths are absolute, so prefixing with "." yields the "./..." form RPM expects.
+                CpioArchiveEntry entry = new CpioArchiveEntry(CpioConstants.FORMAT_NEW,
+                        "." + file.path(), file.content().length);
                 entry.setMode(file.mode());
                 entry.setInode(inode++);
                 entry.setUID(0);
@@ -360,17 +349,11 @@ public abstract class CreateRpm extends DefaultTask {
         int fileCount = files.size();
         int[] fileSizes = new int[fileCount];
         int[] fileModes = new int[fileCount];
-        int[] fileRdevs = new int[fileCount];
         int[] fileMtimes = new int[fileCount];
         String[] fileDigests = new String[fileCount];
         String[] fileLinkTos = new String[fileCount];
-        int[] fileFlags = new int[fileCount];
         String[] fileUserNames = new String[fileCount];
         String[] fileGroupNames = new String[fileCount];
-        int[] fileVerifyFlags = new int[fileCount];
-        int[] fileDevices = new int[fileCount];
-        int[] fileInodes = new int[fileCount];
-        String[] fileLangs = new String[fileCount];
         int[] dirIndexes = new int[fileCount];
         String[] baseNames = new String[fileCount];
 
@@ -387,17 +370,11 @@ public abstract class CreateRpm extends DefaultTask {
             baseNames[i] = baseName;
             fileSizes[i] = file.content().length;
             fileModes[i] = file.mode();
-            fileRdevs[i] = 0;
             fileMtimes[i] = (int) file.mtime();
-            fileDigests[i] = isRegularFile(file.mode()) ? sha256(file.content()) : "";
+            fileDigests[i] = isRegularFile(file.mode()) ? DigestUtils.hexDigest("SHA-256", file.content()) : "";
             fileLinkTos[i] = "";
-            fileFlags[i] = 0;
             fileUserNames[i] = "root";
             fileGroupNames[i] = "root";
-            fileVerifyFlags[i] = -1;
-            fileDevices[i] = 1;
-            fileInodes[i] = i + 1;
-            fileLangs[i] = "";
 
             installedSize += fileSizes[i];
         }
@@ -425,22 +402,16 @@ public abstract class CreateRpm extends DefaultTask {
         header.putStringArray(TAG_PRE_UN_PROG, new String[]{"/bin/sh"});
         header.putInt32(TAG_FILE_SIZES, fileSizes);
         header.putInt16(TAG_FILE_MODES, fileModes);
-        header.putInt16(TAG_FILE_RDEVS, fileRdevs);
         header.putInt32(TAG_FILE_MTIMES, fileMtimes);
         header.putStringArray(TAG_FILE_DIGESTS, fileDigests);
         header.putStringArray(TAG_FILE_LINKTOS, fileLinkTos);
-        header.putInt32(TAG_FILE_FLAGS, fileFlags);
         header.putStringArray(TAG_FILE_USERNAMES, fileUserNames);
         header.putStringArray(TAG_FILE_GROUPNAMES, fileGroupNames);
         header.putString(TAG_SOURCE_RPM, "%s-%s-%s.src.rpm".formatted(packageName, packageVersion, packageRelease));
-        header.putInt32(TAG_FILE_VERIFY_FLAGS, fileVerifyFlags);
         header.putStringArray(TAG_PROVIDE_NAMES, new String[]{packageName});
         header.putInt32(TAG_PROVIDE_FLAGS, SENSE_EQUAL);
         header.putStringArray(TAG_PROVIDE_VERSIONS, new String[]{provideVersion});
         header.putString(TAG_RPM_VERSION, BUILT_BY_RPM_VERSION);
-        header.putInt32(TAG_FILE_DEVICES, fileDevices);
-        header.putInt32(TAG_FILE_INODES, fileInodes);
-        header.putStringArray(TAG_FILE_LANGS, fileLangs);
         header.putInt32(TAG_DIR_INDEXES, dirIndexes);
         header.putStringArray(TAG_BASE_NAMES, baseNames);
         header.putStringArray(TAG_DIR_NAMES, dirNames.keySet().toArray(new String[0]));
@@ -449,9 +420,9 @@ public abstract class CreateRpm extends DefaultTask {
         header.putString(TAG_PAYLOAD_FLAGS, "9");
         header.putInt32(TAG_FILE_DIGEST_ALGO, DIGEST_ALGO_SHA256);
         header.putString(TAG_ENCODING, "utf-8");
-        header.putStringArray(TAG_PAYLOAD_DIGEST, new String[]{sha256(payload)});
+        header.putStringArray(TAG_PAYLOAD_DIGEST, new String[]{DigestUtils.hexDigest("SHA-256", payload)});
         header.putInt32(TAG_PAYLOAD_DIGEST_ALGO, DIGEST_ALGO_SHA256);
-        header.putStringArray(TAG_PAYLOAD_DIGEST_ALT, new String[]{sha256(cpio)});
+        header.putStringArray(TAG_PAYLOAD_DIGEST_ALT, new String[]{DigestUtils.hexDigest("SHA-256", cpio)});
 
         return header.build();
     }
@@ -459,42 +430,39 @@ public abstract class CreateRpm extends DefaultTask {
     /// Builds the signature header carrying the size and digest information.
     private static byte[] createSignature(byte[] header, byte[] payload, int archiveSize) throws IOException {
         RpmHeader signature = new RpmHeader(SIGNATURE_REGION_TAG);
-        signature.putString(SIG_SHA1, sha1(header));
-        signature.putString(SIG_SHA256, sha256(header));
+        signature.putString(SIG_SHA1, DigestUtils.hexDigest("SHA-1", header));
+        signature.putString(SIG_SHA256, DigestUtils.hexDigest("SHA-256", header));
         signature.putInt32(SIG_SIZE, header.length + payload.length);
-        signature.putBin(SIG_MD5, md5(header, payload));
+        signature.putBin(SIG_MD5, DigestUtils.digest("MD5", header, payload));
         signature.putInt32(SIG_PAYLOAD_SIZE, archiveSize);
 
         byte[] bytes = signature.build();
         int padding = (8 - (bytes.length % 8)) % 8;
-        if (padding == 0)
-            return bytes;
-
-        byte[] padded = new byte[bytes.length + padding];
-        System.arraycopy(bytes, 0, padded, 0, bytes.length);
-        return padded;
+        return padding == 0 ? bytes : Arrays.copyOf(bytes, bytes.length + padding);
     }
 
     /// Builds the historical 96-byte lead that starts every RPM file.
     private static byte[] createLead(ReleaseType releaseType, String packageVersion, String packageRelease) {
-        ByteArrayOutputStream lead = new ByteArrayOutputStream(96);
+        ByteBuffer lead = ByteBuffer.allocate(96);
 
-        lead.writeBytes(new byte[]{(byte) 0xed, (byte) 0xab, (byte) 0xee, (byte) 0xdb});
-        lead.write(3); // major
-        lead.write(0); // minor
-        writeBigEndianShort(lead, 0); // binary package
-        writeBigEndianShort(lead, 0); // architecture number, historical only
+        lead.put(new byte[]{(byte) 0xed, (byte) 0xab, (byte) 0xee, (byte) 0xdb});
+        lead.put((byte) 3); // major
+        lead.put((byte) 0); // minor
+        lead.putShort((short) 0); // binary package
+        lead.putShort((short) 0); // architecture number, historical only
 
+        // The package name is NUL-padded to 66 bytes; the buffer is already zeroed.
         byte[] name = "%s-%s-%s".formatted(releaseType.getPackageName(), packageVersion, packageRelease)
                 .getBytes(StandardCharsets.UTF_8);
-        for (int i = 0; i < 66; i++)
-            lead.write(i < name.length && i < 65 ? name[i] : 0);
+        int nameLength = Math.min(name.length, 65);
+        lead.put(name, 0, nameLength);
+        lead.position(lead.position() + (66 - nameLength));
 
-        writeBigEndianShort(lead, 1); // OS number, Linux
-        writeBigEndianShort(lead, 5); // header-style signatures
-        lead.writeBytes(new byte[16]);
+        lead.putShort((short) 1); // OS number, Linux
+        lead.putShort((short) 5); // header-style signatures
+        lead.put(new byte[16]); // reserved
 
-        return lead.toByteArray();
+        return lead.array();
     }
 
     /// Generates the `%post` scriptlet registering the channel command.
@@ -520,7 +488,7 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Returns whether the mode describes a regular file, as opposed to a directory.
     private static boolean isRegularFile(int mode) {
-        return (mode & 0170000) == 0100000;
+        return (mode & CpioConstants.S_IFMT) == CpioConstants.C_ISREG;
     }
 
     /// Normalizes a project version into a value accepted by the RPM `Version` tag.
@@ -542,47 +510,6 @@ public abstract class CreateRpm extends DefaultTask {
             }
         }
         return result.toString();
-    }
-
-    /// Returns the lowercase hexadecimal SHA-1 digest of `data`.
-    private static String sha1(byte @Unmodifiable [] data) {
-        return HexFormat.of().formatHex(digest("SHA-1", data));
-    }
-
-    /// Returns the lowercase hexadecimal SHA-256 digest of `data`.
-    private static String sha256(byte @Unmodifiable [] data) {
-        return HexFormat.of().formatHex(digest("SHA-256", data));
-    }
-
-    /// Returns the raw MD5 digest of the concatenation of `first` and `second`.
-    ///
-    /// The digest is fed incrementally so the two inputs are never copied into a
-    /// single buffer, which matters because the payload can be several megabytes.
-    private static byte @Unmodifiable [] md5(byte @Unmodifiable [] first, byte @Unmodifiable [] second) {
-        MessageDigest digest = newDigest("MD5");
-        digest.update(first);
-        digest.update(second);
-        return digest.digest();
-    }
-
-    /// Computes a message digest over `data`.
-    private static byte @Unmodifiable [] digest(String algorithm, byte @Unmodifiable [] data) {
-        return newDigest(algorithm).digest(data);
-    }
-
-    /// Creates a message digest, wrapping the checked exception that cannot occur.
-    private static MessageDigest newDigest(String algorithm) {
-        try {
-            return MessageDigest.getInstance(algorithm);
-        } catch (NoSuchAlgorithmException e) {
-            throw new AssertionError("Unsupported digest algorithm: " + algorithm, e);
-        }
-    }
-
-    /// Writes one big-endian 16-bit integer.
-    private static void writeBigEndianShort(ByteArrayOutputStream out, int value) {
-        out.write((value >>> 8) & 0xff);
-        out.write(value & 0xff);
     }
 
     /// One artifact installed by the package.

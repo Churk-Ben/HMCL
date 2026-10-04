@@ -21,8 +21,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 
@@ -119,12 +121,10 @@ final class RpmHeader {
     /// @param values the integer values
     /// @return this builder
     public RpmHeader putInt16(int tag, int @Unmodifiable [] values) {
-        ByteArrayOutputStream data = new ByteArrayOutputStream(values.length * 2);
-        for (int value : values) {
-            data.write((value >>> 8) & 0xff);
-            data.write(value & 0xff);
-        }
-        return put(tag, TYPE_INT16, data.toByteArray(), values.length, 2);
+        ByteBuffer data = ByteBuffer.allocate(values.length * 2);
+        for (int value : values)
+            data.putShort((short) value);
+        return put(tag, TYPE_INT16, data.array(), values.length, 2);
     }
 
     /// Adds an array of signed 32-bit integers.
@@ -133,10 +133,10 @@ final class RpmHeader {
     /// @param values the integer values
     /// @return this builder
     public RpmHeader putInt32(int tag, int @Unmodifiable [] values) {
-        ByteArrayOutputStream data = new ByteArrayOutputStream(values.length * 4);
+        ByteBuffer data = ByteBuffer.allocate(values.length * 4);
         for (int value : values)
-            writeInt32(data, value);
-        return put(tag, TYPE_INT32, data.toByteArray(), values.length, 4);
+            data.putInt(value);
+        return put(tag, TYPE_INT32, data.array(), values.length, 4);
     }
 
     /// Adds a single signed 32-bit integer.
@@ -189,19 +189,21 @@ final class RpmHeader {
         int trailerOffset = data.size();
         index[2] = trailerOffset;
         index[3] = INDEX_ENTRY_SIZE;
-        writeInt32(data, regionTag);
-        writeInt32(data, TYPE_BIN);
-        writeInt32(data, -(indexCount * INDEX_ENTRY_SIZE));
-        writeInt32(data, INDEX_ENTRY_SIZE);
+        ByteBuffer trailer = ByteBuffer.allocate(INDEX_ENTRY_SIZE);
+        trailer.putInt(regionTag);
+        trailer.putInt(TYPE_BIN);
+        trailer.putInt(-(indexCount * INDEX_ENTRY_SIZE));
+        trailer.putInt(INDEX_ENTRY_SIZE);
+        data.writeBytes(trailer.array());
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.writeBytes(MAGIC);
-        writeInt32(out, indexCount);
-        writeInt32(out, data.size());
+        ByteBuffer out = ByteBuffer.allocate(MAGIC.length + 8 + index.length * 4 + data.size());
+        out.put(MAGIC);
+        out.putInt(indexCount);
+        out.putInt(data.size());
         for (int value : index)
-            writeInt32(out, value);
-        out.writeBytes(data.toByteArray());
-        return out.toByteArray();
+            out.putInt(value);
+        out.put(data.toByteArray());
+        return out.array();
     }
 
     /// Stores one already-encoded entry.
@@ -213,9 +215,7 @@ final class RpmHeader {
     /// Encodes a string as UTF-8 followed by a NUL byte.
     private static byte @Unmodifiable [] encodeString(String value) {
         byte[] text = value.getBytes(StandardCharsets.UTF_8);
-        byte[] result = new byte[text.length + 1];
-        System.arraycopy(text, 0, result, 0, text.length);
-        return result;
+        return Arrays.copyOf(text, text.length + 1);
     }
 
     /// Pads `out` with NUL bytes until its size is a multiple of `alignment`.
@@ -225,14 +225,6 @@ final class RpmHeader {
             if (remainder != 0)
                 out.writeBytes(new byte[alignment - remainder]);
         }
-    }
-
-    /// Writes one big-endian 32-bit integer.
-    private static void writeInt32(ByteArrayOutputStream out, int value) {
-        out.write((value >>> 24) & 0xff);
-        out.write((value >>> 16) & 0xff);
-        out.write((value >>> 8) & 0xff);
-        out.write(value & 0xff);
     }
 
     /// One typed value stored in the header data section.
