@@ -18,12 +18,14 @@
 package org.jackhuang.hmcl.gradle.pack;
 
 import org.gradle.api.DefaultTask;
+import org.gradle.api.GradleException;
 import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.logging.Logger;
 import org.gradle.api.logging.Logging;
 import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.Input;
 import org.gradle.api.tasks.InputFile;
+import org.gradle.api.tasks.Optional;
 import org.gradle.api.tasks.OutputFile;
 import org.gradle.api.tasks.TaskAction;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -225,6 +227,14 @@ public abstract class CreateRpm extends DefaultTask {
     @OutputFile
     public abstract RegularFileProperty getOutputFile();
 
+    /// Optional reproducible-build timestamp, in seconds since the Unix epoch.
+    ///
+    /// When present it is recorded in the `Buildtime` tag and in every file entry
+    /// so repeated builds with the same inputs produce identical packages.
+    @Input
+    @Optional
+    public abstract Property<Long> getBuildTimestamp();
+
     /// Builds the payload, header, signature and lead, then writes the package.
     ///
     /// @throws IOException if reading an input artifact or writing the package fails
@@ -247,20 +257,23 @@ public abstract class CreateRpm extends DefaultTask {
             throw new IOException("Empty icon file: " + iconFile);
 
         ReleaseType releaseType = getReleaseType().get();
-        long buildTime = Instant.now().getEpochSecond();
+        long buildTime = getBuildTimestamp().isPresent()
+                ? getBuildTimestamp().get()
+                : Instant.now().getEpochSecond();
         String packageVersion = sanitizeVersion(getVersion().get());
         String packageRelease = "1";
-        String targetPath = "/usr/share/java/hmcl/" + appShFile.getFileName();
+        LinuxPackageFiles linuxFiles = new LinuxPackageFiles(
+                releaseType, appShFile.getFileName().toString(), getLauncherClassName().get());
 
-        List<RpmFile> files = buildFileList(appShBytes, iconBytes, releaseType, getLauncherClassName().get(),
-                targetPath, buildTime);
+        List<RpmFile> files = buildFileList(appShBytes, iconBytes, linuxFiles, buildTime);
 
         LOGGER.lifecycle("Creating cpio payload");
         byte[] cpio = createCpioArchive(files);
         byte[] payload = gzip(cpio);
 
         LOGGER.lifecycle("Creating RPM header");
-        byte[] header = createHeader(files, cpio, payload, releaseType, packageVersion, packageRelease, buildTime);
+        byte[] header = createHeader(files, cpio, payload, releaseType, linuxFiles,
+                packageVersion, packageRelease, buildTime);
 
         LOGGER.lifecycle("Creating RPM signature");
         byte[] signature = createSignature(header, payload, cpio.length);
@@ -279,18 +292,16 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Builds the list of artifacts installed by the package.
     private static List<RpmFile> buildFileList(byte[] appShBytes, byte[] iconBytes,
-                                               ReleaseType releaseType, String launcherClassName,
-                                               String targetPath, long buildTime) {
-        String typeName = releaseType.getName();
+                                               LinuxPackageFiles linuxFiles, long buildTime) {
         List<RpmFile> files = new ArrayList<>();
 
-        files.add(new RpmFile("/usr/share/java/hmcl", DIRECTORY_MODE, new byte[0], buildTime));
-        files.add(new RpmFile(targetPath, EXECUTABLE_MODE, appShBytes, buildTime));
-        files.add(new RpmFile(getLauncherPath(typeName), EXECUTABLE_MODE,
-                getLauncherScript(releaseType, targetPath).getBytes(StandardCharsets.UTF_8), buildTime));
-        files.add(new RpmFile(getDesktopPath(typeName), REGULAR_FILE_MODE,
-                getDesktopInfo(releaseType, launcherClassName).getBytes(StandardCharsets.UTF_8), buildTime));
-        files.add(new RpmFile(getIconPath(typeName), REGULAR_FILE_MODE, iconBytes, buildTime));
+        files.add(new RpmFile(LinuxPackageFiles.INSTALL_DIRECTORY, DIRECTORY_MODE, new byte[0], buildTime));
+        files.add(new RpmFile(linuxFiles.targetPath(), EXECUTABLE_MODE, appShBytes, buildTime));
+        files.add(new RpmFile(linuxFiles.launcherPath(), EXECUTABLE_MODE,
+                linuxFiles.launcherScript().getBytes(StandardCharsets.UTF_8), buildTime));
+        files.add(new RpmFile(linuxFiles.desktopFilePath(), REGULAR_FILE_MODE,
+                linuxFiles.desktopInfo().getBytes(StandardCharsets.UTF_8), buildTime));
+        files.add(new RpmFile(linuxFiles.iconTargetPath(), REGULAR_FILE_MODE, iconBytes, buildTime));
 
         return files;
     }
@@ -320,8 +331,8 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Builds the main package header describing metadata and the file list.
     private static byte[] createHeader(List<RpmFile> files, byte[] cpio, byte[] payload,
-                                       ReleaseType releaseType, String packageVersion,
-                                       String packageRelease, long buildTime) throws IOException {
+                                       ReleaseType releaseType, LinuxPackageFiles linuxFiles,
+                                       String packageVersion, String packageRelease, long buildTime) throws IOException {
         RpmHeader header = new RpmHeader(HEADER_REGION_TAG);
 
         int fileCount = files.size();
@@ -386,9 +397,9 @@ public abstract class CreateRpm extends DefaultTask {
         header.putString(TAG_URL, "https://github.com/HMCL-dev/HMCL");
         header.putString(TAG_OS, "linux");
         header.putString(TAG_ARCH, "noarch");
-        header.putString(TAG_POST_IN, getPostInstall(releaseType));
+        header.putString(TAG_POST_IN, getPostInstall(linuxFiles, releaseType.getAlternativesPriority()));
         header.putStringArray(TAG_POST_IN_PROG, new String[]{"/bin/sh"});
-        header.putString(TAG_PRE_UN, getPreUninstall(releaseType));
+        header.putString(TAG_PRE_UN, getPreUninstall(linuxFiles));
         header.putStringArray(TAG_PRE_UN_PROG, new String[]{"/bin/sh"});
         header.putInt32(TAG_FILE_SIZES, fileSizes);
         header.putInt16(TAG_FILE_MODES, fileModes);
@@ -465,81 +476,24 @@ public abstract class CreateRpm extends DefaultTask {
     }
 
     /// Generates the `%post` scriptlet registering the channel command.
-    private static String getPostInstall(ReleaseType releaseType) {
+    private static String getPostInstall(LinuxPackageFiles linuxFiles, int alternativesPriority) {
         return """
                 #!/bin/sh
                 if command -v update-alternatives >/dev/null 2>&1; then
                     update-alternatives --install %s hmcl %s %d
                 fi
-                """.formatted(COMMON_LAUNCHER_PATH, getLauncherPath(releaseType.getName()),
-                releaseType.getAlternativesPriority());
+                """.formatted(LinuxPackageFiles.COMMON_LAUNCHER_PATH, linuxFiles.launcherPath(),
+                alternativesPriority);
     }
 
     /// Generates the `%preun` scriptlet removing the channel command.
-    private static String getPreUninstall(ReleaseType releaseType) {
+    private static String getPreUninstall(LinuxPackageFiles linuxFiles) {
         return """
                 #!/bin/sh
                 if [ "$1" = 0 ] && command -v update-alternatives >/dev/null 2>&1; then
                     update-alternatives --remove hmcl %s
                 fi
-                """.formatted(getLauncherPath(releaseType.getName()));
-    }
-
-    /// Creates a tiny wrapper that launches the bundled shell script from the user's home directory.
-    private static String getLauncherScript(ReleaseType releaseType, String targetPath) {
-        String typeName = releaseType.getName();
-        return """
-                #!/usr/bin/env bash
-                cd "$HOME"
-                if [ -z "${HMCL_USER_HOME:-}" ]; then
-                    if [ -z "${XDG_DATA_HOME:-}" ]; then
-                        export HMCL_USER_HOME="$HOME/.local/share/hmcl"
-                    else
-                        export HMCL_USER_HOME="$XDG_DATA_HOME/hmcl"
-                    fi
-                fi
-                if [ -z "${HMCL_LOCAL_HOME:-}" ]; then
-                    export HMCL_LOCAL_HOME="$HMCL_USER_HOME/local-%s"
-                fi
-                if [ -z "${HMCL_DEPENDENCIES_DIR:-}" ]; then
-                    export HMCL_DEPENDENCIES_DIR="$HMCL_USER_HOME/dependencies"
-                fi
-                exec %s "$@"
-                """.formatted(typeName, targetPath);
-    }
-
-    /// Generates the desktop entry that points to the channel-specific launcher command.
-    private static String getDesktopInfo(ReleaseType releaseType, String launcherClassName) {
-        String typeName = releaseType.getName();
-        return """
-                [Desktop Entry]
-                Type=Application
-                Name=%s
-                Comment=Hello Minecraft! Launcher
-                Exec=%s
-                Icon=%s
-                Terminal=false
-                StartupNotify=false
-                Categories=Game;
-                Keywords=mc;minecraft;
-                StartupWMClass=%s
-                """.formatted(releaseType.getDisplayName(), getLauncherPath(typeName),
-                getIconPath(typeName), launcherClassName);
-    }
-
-    /// Absolute path of the channel-specific command under `/usr/bin`.
-    private static String getLauncherPath(String typeName) {
-        return "/usr/bin/hmcl-" + typeName;
-    }
-
-    /// Absolute path of the desktop entry for the channel.
-    private static String getDesktopPath(String typeName) {
-        return "/usr/share/applications/hmcl-%s.desktop".formatted(typeName);
-    }
-
-    /// Absolute path of the icon for the channel.
-    private static String getIconPath(String typeName) {
-        return "/usr/share/icons/hicolor/256x256/apps/hmcl-%s.png".formatted(typeName);
+                """.formatted(linuxFiles.launcherPath());
     }
 
     /// Returns whether the mode describes a regular file, as opposed to a directory.
@@ -549,10 +503,23 @@ public abstract class CreateRpm extends DefaultTask {
 
     /// Normalizes a project version into a value accepted by the RPM `Version` tag.
     ///
-    /// RPM uses the dash as the separator between the version and the release, so
-    /// dashes that appear in prerelease identifiers are replaced by underscores.
+    /// RPM reserves the dash as the separator between the version and the release
+    /// and only permits a small character set. Unsupported characters, including
+    /// the dash, are replaced by underscores.
     private static String sanitizeVersion(String version) {
-        return version.replace('-', '_');
+        if (version.isBlank())
+            throw new GradleException("RPM version must not be blank");
+
+        StringBuilder result = new StringBuilder(version.length());
+        for (int i = 0; i < version.length(); i++) {
+            char ch = version.charAt(i);
+            if (Character.isLetterOrDigit(ch) || ch == '.' || ch == '_' || ch == '+' || ch == '~') {
+                result.append(ch);
+            } else {
+                result.append('_');
+            }
+        }
+        return result.toString();
     }
 
     /// Concatenates two byte arrays.
@@ -601,9 +568,6 @@ public abstract class CreateRpm extends DefaultTask {
         out.write((value >>> 8) & 0xff);
         out.write(value & 0xff);
     }
-
-    /// Shared command managed through the alternatives system.
-    private static final String COMMON_LAUNCHER_PATH = "/usr/bin/hmcl";
 
     /// One artifact installed by the package.
     ///
