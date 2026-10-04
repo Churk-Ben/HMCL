@@ -172,6 +172,10 @@ val hmclProperties = buildList {
     add("hmcl.curseforge.apikey" to curseForgeApiKey)
     add("hmcl.authlib-injector.version" to libs.authlib.injector.get().version!!)
     add("hmcl.lwjgl-unsafe-agent.version" to libs.lwjgl.unsafe.agent.get().version!!)
+    if (versionType == "unofficial") {
+        projectConfig.getProperty("hmcl.update_source.override")?.let { add("hmcl.update_source.override" to it) }
+        projectConfig.getProperty("hmcl.manual_update_url")?.let { add("hmcl.manual_update_url" to it) }
+    }
 }
 
 val hmclPropertiesFile = layout.buildDirectory.file("hmcl.properties")
