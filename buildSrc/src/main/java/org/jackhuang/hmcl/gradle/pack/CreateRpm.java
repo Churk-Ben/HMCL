@@ -1,0 +1,622 @@
+/*
+ * Hello Minecraft! Launcher
+ * Copyright (C) 2026 huangyuhui <huanghongxun2008@126.com> and contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+package org.jackhuang.hmcl.gradle.pack;
+
+import org.gradle.api.DefaultTask;
+import org.gradle.api.file.RegularFileProperty;
+import org.gradle.api.logging.Logger;
+import org.gradle.api.logging.Logging;
+import org.gradle.api.provider.Property;
+import org.gradle.api.tasks.Input;
+import org.gradle.api.tasks.InputFile;
+import org.gradle.api.tasks.OutputFile;
+import org.gradle.api.tasks.TaskAction;
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.Deflater;
+import java.util.zip.GZIPOutputStream;
+
+/// Creates an RPM package for the current HMCL channel.
+///
+/// The package is assembled entirely in user space, mirroring [CreateDeb], so
+/// neither `rpmbuild` nor a rooted build environment is required. The output is
+/// an unsigned, gzip-compressed `noarch` RPM in the version 4 format.
+///
+/// ## Package layout
+///
+/// The payload installs the same four artifacts as the Debian package:
+///
+/// - the bundled HMCL shell launcher under `/usr/share/java/hmcl/`
+/// - a channel-specific command under `/usr/bin/`
+/// - a desktop entry under `/usr/share/applications/`
+/// - the HMCL icon under `/usr/share/icons/hicolor/256x256/apps/`
+///
+/// ## Channel commands and aliases
+///
+/// Every package installs a channel-specific executable such as `hmcl-stable`
+/// or `hmcl-beta` and registers it into the shared `hmcl` alternatives group
+/// through `%post` and `%preun` scriptlets, matching the Debian package.
+@NotNullByDefault
+public abstract class CreateRpm extends DefaultTask {
+
+    /// Logger used for progress messages.
+    public static final Logger LOGGER = Logging.getLogger(CreateRpm.class);
+
+    /// Unix mode of an installed directory.
+    private static final int DIRECTORY_MODE = 040755;
+
+    /// Unix mode of an installed executable.
+    private static final int EXECUTABLE_MODE = 0100755;
+
+    /// Unix mode of a regular data file.
+    private static final int REGULAR_FILE_MODE = 0100644;
+
+    /// Region tag identifying the immutable region of a package header.
+    private static final int HEADER_REGION_TAG = 63;
+
+    /// Region tag identifying the immutable region of a signature header.
+    private static final int SIGNATURE_REGION_TAG = 62;
+
+    /// RPM header tag for the locale table.
+    private static final int TAG_HEADER_I18NTABLE = 100;
+    /// RPM header tag for the package name.
+    private static final int TAG_NAME = 1000;
+    /// RPM header tag for the upstream version.
+    private static final int TAG_VERSION = 1001;
+    /// RPM header tag for the package release.
+    private static final int TAG_RELEASE = 1002;
+    /// RPM header tag for the one-line summary.
+    private static final int TAG_SUMMARY = 1004;
+    /// RPM header tag for the multi-line description.
+    private static final int TAG_DESCRIPTION = 1005;
+    /// RPM header tag for the build timestamp.
+    private static final int TAG_BUILD_TIME = 1006;
+    /// RPM header tag for the build host name.
+    private static final int TAG_BUILD_HOST = 1007;
+    /// RPM header tag for the total installed size.
+    private static final int TAG_SIZE = 1009;
+    /// RPM header tag for the license identifier.
+    private static final int TAG_LICENSE = 1014;
+    /// RPM header tag for the package group.
+    private static final int TAG_GROUP = 1016;
+    /// RPM header tag for the project URL.
+    private static final int TAG_URL = 1020;
+    /// RPM header tag for the target operating system.
+    private static final int TAG_OS = 1021;
+    /// RPM header tag for the target architecture.
+    private static final int TAG_ARCH = 1022;
+    /// RPM header tag for the post-install scriptlet body.
+    private static final int TAG_POST_IN = 1024;
+    /// RPM header tag for the pre-uninstall scriptlet body.
+    private static final int TAG_PRE_UN = 1025;
+    /// RPM header tag for the per-file sizes.
+    private static final int TAG_FILE_SIZES = 1028;
+    /// RPM header tag for the per-file modes.
+    private static final int TAG_FILE_MODES = 1030;
+    /// RPM header tag for the per-file device numbers.
+    private static final int TAG_FILE_RDEVS = 1033;
+    /// RPM header tag for the per-file modification times.
+    private static final int TAG_FILE_MTIMES = 1034;
+    /// RPM header tag for the per-file digests.
+    private static final int TAG_FILE_DIGESTS = 1035;
+    /// RPM header tag for the per-file symlink targets.
+    private static final int TAG_FILE_LINKTOS = 1036;
+    /// RPM header tag for the per-file flags.
+    private static final int TAG_FILE_FLAGS = 1037;
+    /// RPM header tag for the per-file owner names.
+    private static final int TAG_FILE_USERNAMES = 1039;
+    /// RPM header tag for the per-file group names.
+    private static final int TAG_FILE_GROUPNAMES = 1040;
+    /// RPM header tag for the originating source package.
+    private static final int TAG_SOURCE_RPM = 1044;
+    /// RPM header tag for the per-file verification flags.
+    private static final int TAG_FILE_VERIFY_FLAGS = 1045;
+    /// RPM header tag for the capabilities provided by the package.
+    private static final int TAG_PROVIDE_NAMES = 1047;
+    /// RPM header tag for the RPM version used to build the package.
+    private static final int TAG_RPM_VERSION = 1064;
+    /// RPM header tag for the post-install scriptlet interpreter.
+    private static final int TAG_POST_IN_PROG = 1086;
+    /// RPM header tag for the pre-uninstall scriptlet interpreter.
+    private static final int TAG_PRE_UN_PROG = 1087;
+    /// RPM header tag for the per-file device identifiers.
+    private static final int TAG_FILE_DEVICES = 1095;
+    /// RPM header tag for the per-file inode numbers.
+    private static final int TAG_FILE_INODES = 1096;
+    /// RPM header tag for the per-file languages.
+    private static final int TAG_FILE_LANGS = 1097;
+    /// RPM header tag for the provide flags.
+    private static final int TAG_PROVIDE_FLAGS = 1112;
+    /// RPM header tag for the provide versions.
+    private static final int TAG_PROVIDE_VERSIONS = 1113;
+    /// RPM header tag for the parent directory index of every file.
+    private static final int TAG_DIR_INDEXES = 1116;
+    /// RPM header tag for the basename of every file.
+    private static final int TAG_BASE_NAMES = 1117;
+    /// RPM header tag for the unique parent directories.
+    private static final int TAG_DIR_NAMES = 1118;
+    /// RPM header tag for the payload archive format.
+    private static final int TAG_PAYLOAD_FORMAT = 1124;
+    /// RPM header tag for the payload compressor.
+    private static final int TAG_PAYLOAD_COMPRESSOR = 1125;
+    /// RPM header tag for the payload compressor level.
+    private static final int TAG_PAYLOAD_FLAGS = 1126;
+    /// RPM header tag for the per-file digest algorithm.
+    private static final int TAG_FILE_DIGEST_ALGO = 5011;
+    /// RPM header tag for the header string encoding.
+    private static final int TAG_ENCODING = 5062;
+    /// RPM header tag for the digest of the compressed payload.
+    private static final int TAG_PAYLOAD_DIGEST = 5092;
+    /// RPM header tag for the payload digest algorithm.
+    private static final int TAG_PAYLOAD_DIGEST_ALGO = 5093;
+    /// RPM header tag for the digest of the uncompressed payload.
+    private static final int TAG_PAYLOAD_DIGEST_ALT = 5097;
+
+    /// RPM signature tag for the SHA-1 digest of the header.
+    private static final int SIG_SHA1 = 269;
+    /// RPM signature tag for the SHA-256 digest of the header.
+    private static final int SIG_SHA256 = 273;
+    /// RPM signature tag for the combined header and payload size.
+    private static final int SIG_SIZE = 1000;
+    /// RPM signature tag for the MD5 digest of the header and payload.
+    private static final int SIG_MD5 = 1004;
+    /// RPM signature tag for the compressed payload size.
+    private static final int SIG_PAYLOAD_SIZE = 1007;
+
+    /// Identifier of the SHA-256 digest algorithm in RPM metadata.
+    private static final int DIGEST_ALGO_SHA256 = 8;
+
+    /// RPM sense flag marking a versioned, equal capability.
+    private static final int SENSE_EQUAL = 8;
+
+    /// RPM version reported in the package metadata.
+    private static final String BUILT_BY_RPM_VERSION = "4.16.0";
+
+    /// Package version written into the `Version` tag and output filename.
+    @Input
+    public abstract Property<String> getVersion();
+
+    /// Release type metadata that controls package name, launcher name, and alias priority.
+    @Input
+    public abstract Property<ReleaseType> getReleaseType();
+
+    /// Launcher class name for the Linux `StartupWMClass` property in the desktop file.
+    @Input
+    public abstract Property<String> getLauncherClassName();
+
+    /// Executable `.sh` artifact produced by `makeExecutables`.
+    @InputFile
+    public abstract RegularFileProperty getAppShFile();
+
+    /// Desktop icon installed into the hicolor icon theme.
+    @InputFile
+    public abstract RegularFileProperty getIconFile();
+
+    /// Final `.rpm` archive written by this task.
+    @OutputFile
+    public abstract RegularFileProperty getOutputFile();
+
+    /// Builds the payload, header, signature and lead, then writes the package.
+    ///
+    /// @throws IOException if reading an input artifact or writing the package fails
+    @TaskAction
+    public void run() throws IOException {
+        Path appShFile = getAppShFile().getAsFile().get().toPath();
+        if (!Files.isRegularFile(appShFile))
+            throw new IOException("Invalid app script file: " + appShFile);
+
+        Path iconFile = getIconFile().getAsFile().get().toPath();
+        if (!Files.isRegularFile(iconFile))
+            throw new IOException("Invalid icon file: " + iconFile);
+
+        byte[] appShBytes = Files.readAllBytes(appShFile);
+        if (appShBytes.length == 0)
+            throw new IOException("Empty app script file: " + appShFile);
+
+        byte[] iconBytes = Files.readAllBytes(iconFile);
+        if (iconBytes.length == 0)
+            throw new IOException("Empty icon file: " + iconFile);
+
+        ReleaseType releaseType = getReleaseType().get();
+        long buildTime = Instant.now().getEpochSecond();
+        String packageVersion = sanitizeVersion(getVersion().get());
+        String packageRelease = "1";
+        String targetPath = "/usr/share/java/hmcl/" + appShFile.getFileName();
+
+        List<RpmFile> files = buildFileList(appShBytes, iconBytes, releaseType, getLauncherClassName().get(),
+                targetPath, buildTime);
+
+        LOGGER.lifecycle("Creating cpio payload");
+        byte[] cpio = createCpioArchive(files);
+        byte[] payload = gzip(cpio);
+
+        LOGGER.lifecycle("Creating RPM header");
+        byte[] header = createHeader(files, cpio, payload, releaseType, packageVersion, packageRelease, buildTime);
+
+        LOGGER.lifecycle("Creating RPM signature");
+        byte[] signature = createSignature(header, payload, cpio.length);
+
+        Path outputFile = getOutputFile().get().getAsFile().toPath();
+        Files.createDirectories(outputFile.getParent());
+
+        LOGGER.lifecycle("Creating rpm file");
+        try (OutputStream output = Files.newOutputStream(outputFile)) {
+            output.write(createLead(releaseType, packageVersion, packageRelease));
+            output.write(signature);
+            output.write(header);
+            output.write(payload);
+        }
+    }
+
+    /// Builds the list of artifacts installed by the package.
+    private static List<RpmFile> buildFileList(byte[] appShBytes, byte[] iconBytes,
+                                               ReleaseType releaseType, String launcherClassName,
+                                               String targetPath, long buildTime) {
+        String typeName = releaseType.getName();
+        List<RpmFile> files = new ArrayList<>();
+
+        files.add(new RpmFile("/usr/share/java/hmcl", DIRECTORY_MODE, new byte[0], buildTime));
+        files.add(new RpmFile(targetPath, EXECUTABLE_MODE, appShBytes, buildTime));
+        files.add(new RpmFile(getLauncherPath(typeName), EXECUTABLE_MODE,
+                getLauncherScript(releaseType, targetPath).getBytes(StandardCharsets.UTF_8), buildTime));
+        files.add(new RpmFile(getDesktopPath(typeName), REGULAR_FILE_MODE,
+                getDesktopInfo(releaseType, launcherClassName).getBytes(StandardCharsets.UTF_8), buildTime));
+        files.add(new RpmFile(getIconPath(typeName), REGULAR_FILE_MODE, iconBytes, buildTime));
+
+        return files;
+    }
+
+    /// Serializes the file list into an uncompressed SVR4 `newc` cpio archive.
+    private static byte[] createCpioArchive(List<RpmFile> files) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (CpioArchiveWriter writer = new CpioArchiveWriter(buffer)) {
+            for (RpmFile file : files)
+                writer.putEntry(file.path(), file.mode(), file.content(), file.mtime());
+        }
+        return buffer.toByteArray();
+    }
+
+    /// Gzip-compresses the cpio archive with the maximum compression level.
+    private static byte[] gzip(byte @Unmodifiable [] data) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (GZIPOutputStream output = new GZIPOutputStream(buffer) {
+            {
+                def.setLevel(Deflater.BEST_COMPRESSION);
+            }
+        }) {
+            output.write(data);
+        }
+        return buffer.toByteArray();
+    }
+
+    /// Builds the main package header describing metadata and the file list.
+    private static byte[] createHeader(List<RpmFile> files, byte[] cpio, byte[] payload,
+                                       ReleaseType releaseType, String packageVersion,
+                                       String packageRelease, long buildTime) throws IOException {
+        RpmHeader header = new RpmHeader(HEADER_REGION_TAG);
+
+        int fileCount = files.size();
+        int[] fileSizes = new int[fileCount];
+        int[] fileModes = new int[fileCount];
+        int[] fileRdevs = new int[fileCount];
+        int[] fileMtimes = new int[fileCount];
+        String[] fileDigests = new String[fileCount];
+        String[] fileLinkTos = new String[fileCount];
+        int[] fileFlags = new int[fileCount];
+        String[] fileUserNames = new String[fileCount];
+        String[] fileGroupNames = new String[fileCount];
+        int[] fileVerifyFlags = new int[fileCount];
+        int[] fileDevices = new int[fileCount];
+        int[] fileInodes = new int[fileCount];
+        String[] fileLangs = new String[fileCount];
+        int[] dirIndexes = new int[fileCount];
+        String[] baseNames = new String[fileCount];
+
+        Map<String, Integer> dirNames = new LinkedHashMap<>();
+        long installedSize = 0;
+
+        for (int i = 0; i < fileCount; i++) {
+            RpmFile file = files.get(i);
+            int slash = file.path().lastIndexOf('/');
+            String dirName = file.path().substring(0, slash + 1);
+            String baseName = file.path().substring(slash + 1);
+
+            dirIndexes[i] = dirNames.computeIfAbsent(dirName, ignored -> dirNames.size());
+            baseNames[i] = baseName;
+            fileSizes[i] = file.content().length;
+            fileModes[i] = file.mode();
+            fileRdevs[i] = 0;
+            fileMtimes[i] = (int) file.mtime();
+            fileDigests[i] = isRegularFile(file.mode()) ? sha256(file.content()) : "";
+            fileLinkTos[i] = "";
+            fileFlags[i] = 0;
+            fileUserNames[i] = "root";
+            fileGroupNames[i] = "root";
+            fileVerifyFlags[i] = -1;
+            fileDevices[i] = 1;
+            fileInodes[i] = i + 1;
+            fileLangs[i] = "";
+
+            installedSize += fileSizes[i];
+        }
+
+        String packageName = releaseType.getPackageName();
+        String provideVersion = packageVersion + "-" + packageRelease;
+
+        header.putStringArray(TAG_HEADER_I18NTABLE, new String[]{"C"});
+        header.putString(TAG_NAME, packageName);
+        header.putString(TAG_VERSION, packageVersion);
+        header.putString(TAG_RELEASE, packageRelease);
+        header.putI18nString(TAG_SUMMARY, releaseType.getDisplayName());
+        header.putI18nString(TAG_DESCRIPTION, "Hello Minecraft! Launcher");
+        header.putInt32(TAG_BUILD_TIME, (int) buildTime);
+        header.putString(TAG_BUILD_HOST, "localhost");
+        header.putInt32(TAG_SIZE, (int) Math.min(installedSize, Integer.MAX_VALUE));
+        header.putString(TAG_LICENSE, "GPL-3.0-or-later");
+        header.putI18nString(TAG_GROUP, "Amusements/Games");
+        header.putString(TAG_URL, "https://github.com/HMCL-dev/HMCL");
+        header.putString(TAG_OS, "linux");
+        header.putString(TAG_ARCH, "noarch");
+        header.putString(TAG_POST_IN, getPostInstall(releaseType));
+        header.putStringArray(TAG_POST_IN_PROG, new String[]{"/bin/sh"});
+        header.putString(TAG_PRE_UN, getPreUninstall(releaseType));
+        header.putStringArray(TAG_PRE_UN_PROG, new String[]{"/bin/sh"});
+        header.putInt32(TAG_FILE_SIZES, fileSizes);
+        header.putInt16(TAG_FILE_MODES, fileModes);
+        header.putInt16(TAG_FILE_RDEVS, fileRdevs);
+        header.putInt32(TAG_FILE_MTIMES, fileMtimes);
+        header.putStringArray(TAG_FILE_DIGESTS, fileDigests);
+        header.putStringArray(TAG_FILE_LINKTOS, fileLinkTos);
+        header.putInt32(TAG_FILE_FLAGS, fileFlags);
+        header.putStringArray(TAG_FILE_USERNAMES, fileUserNames);
+        header.putStringArray(TAG_FILE_GROUPNAMES, fileGroupNames);
+        header.putString(TAG_SOURCE_RPM, "%s-%s-%s.src.rpm".formatted(packageName, packageVersion, packageRelease));
+        header.putInt32(TAG_FILE_VERIFY_FLAGS, fileVerifyFlags);
+        header.putStringArray(TAG_PROVIDE_NAMES, new String[]{packageName});
+        header.putInt32(TAG_PROVIDE_FLAGS, SENSE_EQUAL);
+        header.putStringArray(TAG_PROVIDE_VERSIONS, new String[]{provideVersion});
+        header.putString(TAG_RPM_VERSION, BUILT_BY_RPM_VERSION);
+        header.putInt32(TAG_FILE_DEVICES, fileDevices);
+        header.putInt32(TAG_FILE_INODES, fileInodes);
+        header.putStringArray(TAG_FILE_LANGS, fileLangs);
+        header.putInt32(TAG_DIR_INDEXES, dirIndexes);
+        header.putStringArray(TAG_BASE_NAMES, baseNames);
+        header.putStringArray(TAG_DIR_NAMES, dirNames.keySet().toArray(new String[0]));
+        header.putString(TAG_PAYLOAD_FORMAT, "cpio");
+        header.putString(TAG_PAYLOAD_COMPRESSOR, "gzip");
+        header.putString(TAG_PAYLOAD_FLAGS, "9");
+        header.putInt32(TAG_FILE_DIGEST_ALGO, DIGEST_ALGO_SHA256);
+        header.putString(TAG_ENCODING, "utf-8");
+        header.putStringArray(TAG_PAYLOAD_DIGEST, new String[]{sha256(payload)});
+        header.putInt32(TAG_PAYLOAD_DIGEST_ALGO, DIGEST_ALGO_SHA256);
+        header.putStringArray(TAG_PAYLOAD_DIGEST_ALT, new String[]{sha256(cpio)});
+
+        return header.build();
+    }
+
+    /// Builds the signature header carrying the size and digest information.
+    private static byte[] createSignature(byte[] header, byte[] payload, int archiveSize) throws IOException {
+        RpmHeader signature = new RpmHeader(SIGNATURE_REGION_TAG);
+        signature.putString(SIG_SHA1, sha1(header));
+        signature.putString(SIG_SHA256, sha256(header));
+        signature.putInt32(SIG_SIZE, header.length + payload.length);
+        signature.putBin(SIG_MD5, md5(concat(header, payload)));
+        signature.putInt32(SIG_PAYLOAD_SIZE, archiveSize);
+
+        byte[] bytes = signature.build();
+        int padding = (8 - (bytes.length % 8)) % 8;
+        if (padding == 0)
+            return bytes;
+
+        byte[] padded = new byte[bytes.length + padding];
+        System.arraycopy(bytes, 0, padded, 0, bytes.length);
+        return padded;
+    }
+
+    /// Builds the historical 96-byte lead that starts every RPM file.
+    private static byte[] createLead(ReleaseType releaseType, String packageVersion, String packageRelease) {
+        ByteArrayOutputStream lead = new ByteArrayOutputStream(96);
+
+        lead.writeBytes(new byte[]{(byte) 0xed, (byte) 0xab, (byte) 0xee, (byte) 0xdb});
+        lead.write(3); // major
+        lead.write(0); // minor
+        writeBigEndianShort(lead, 0); // binary package
+        writeBigEndianShort(lead, 0); // architecture number, historical only
+
+        byte[] name = "%s-%s-%s".formatted(releaseType.getPackageName(), packageVersion, packageRelease)
+                .getBytes(StandardCharsets.UTF_8);
+        for (int i = 0; i < 66; i++)
+            lead.write(i < name.length && i < 65 ? name[i] : 0);
+
+        writeBigEndianShort(lead, 1); // OS number, Linux
+        writeBigEndianShort(lead, 5); // header-style signatures
+        lead.writeBytes(new byte[16]);
+
+        return lead.toByteArray();
+    }
+
+    /// Generates the `%post` scriptlet registering the channel command.
+    private static String getPostInstall(ReleaseType releaseType) {
+        return """
+                #!/bin/sh
+                if command -v update-alternatives >/dev/null 2>&1; then
+                    update-alternatives --install %s hmcl %s %d
+                fi
+                """.formatted(COMMON_LAUNCHER_PATH, getLauncherPath(releaseType.getName()),
+                releaseType.getAlternativesPriority());
+    }
+
+    /// Generates the `%preun` scriptlet removing the channel command.
+    private static String getPreUninstall(ReleaseType releaseType) {
+        return """
+                #!/bin/sh
+                if [ "$1" = 0 ] && command -v update-alternatives >/dev/null 2>&1; then
+                    update-alternatives --remove hmcl %s
+                fi
+                """.formatted(getLauncherPath(releaseType.getName()));
+    }
+
+    /// Creates a tiny wrapper that launches the bundled shell script from the user's home directory.
+    private static String getLauncherScript(ReleaseType releaseType, String targetPath) {
+        String typeName = releaseType.getName();
+        return """
+                #!/usr/bin/env bash
+                cd "$HOME"
+                if [ -z "${HMCL_USER_HOME:-}" ]; then
+                    if [ -z "${XDG_DATA_HOME:-}" ]; then
+                        export HMCL_USER_HOME="$HOME/.local/share/hmcl"
+                    else
+                        export HMCL_USER_HOME="$XDG_DATA_HOME/hmcl"
+                    fi
+                fi
+                if [ -z "${HMCL_LOCAL_HOME:-}" ]; then
+                    export HMCL_LOCAL_HOME="$HMCL_USER_HOME/local-%s"
+                fi
+                if [ -z "${HMCL_DEPENDENCIES_DIR:-}" ]; then
+                    export HMCL_DEPENDENCIES_DIR="$HMCL_USER_HOME/dependencies"
+                fi
+                exec %s "$@"
+                """.formatted(typeName, targetPath);
+    }
+
+    /// Generates the desktop entry that points to the channel-specific launcher command.
+    private static String getDesktopInfo(ReleaseType releaseType, String launcherClassName) {
+        String typeName = releaseType.getName();
+        return """
+                [Desktop Entry]
+                Type=Application
+                Name=%s
+                Comment=Hello Minecraft! Launcher
+                Exec=%s
+                Icon=%s
+                Terminal=false
+                StartupNotify=false
+                Categories=Game;
+                Keywords=mc;minecraft;
+                StartupWMClass=%s
+                """.formatted(releaseType.getDisplayName(), getLauncherPath(typeName),
+                getIconPath(typeName), launcherClassName);
+    }
+
+    /// Absolute path of the channel-specific command under `/usr/bin`.
+    private static String getLauncherPath(String typeName) {
+        return "/usr/bin/hmcl-" + typeName;
+    }
+
+    /// Absolute path of the desktop entry for the channel.
+    private static String getDesktopPath(String typeName) {
+        return "/usr/share/applications/hmcl-%s.desktop".formatted(typeName);
+    }
+
+    /// Absolute path of the icon for the channel.
+    private static String getIconPath(String typeName) {
+        return "/usr/share/icons/hicolor/256x256/apps/hmcl-%s.png".formatted(typeName);
+    }
+
+    /// Returns whether the mode describes a regular file, as opposed to a directory.
+    private static boolean isRegularFile(int mode) {
+        return (mode & 0170000) == 0100000;
+    }
+
+    /// Normalizes a project version into a value accepted by the RPM `Version` tag.
+    ///
+    /// RPM uses the dash as the separator between the version and the release, so
+    /// dashes that appear in prerelease identifiers are replaced by underscores.
+    private static String sanitizeVersion(String version) {
+        return version.replace('-', '_');
+    }
+
+    /// Concatenates two byte arrays.
+    private static byte @Unmodifiable [] concat(byte @Unmodifiable [] first, byte @Unmodifiable [] second) {
+        byte[] result = new byte[first.length + second.length];
+        System.arraycopy(first, 0, result, 0, first.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
+    }
+
+    /// Returns the lowercase hexadecimal SHA-1 digest of `data`.
+    private static String sha1(byte @Unmodifiable [] data) {
+        return hex(digest("SHA-1", data));
+    }
+
+    /// Returns the lowercase hexadecimal SHA-256 digest of `data`.
+    private static String sha256(byte @Unmodifiable [] data) {
+        return hex(digest("SHA-256", data));
+    }
+
+    /// Returns the raw MD5 digest of `data`.
+    private static byte @Unmodifiable [] md5(byte @Unmodifiable [] data) {
+        return digest("MD5", data);
+    }
+
+    /// Computes a message digest, wrapping the checked exception that cannot occur.
+    private static byte @Unmodifiable [] digest(String algorithm, byte @Unmodifiable [] data) {
+        try {
+            return MessageDigest.getInstance(algorithm).digest(data);
+        } catch (NoSuchAlgorithmException e) {
+            throw new AssertionError("Unsupported digest algorithm: " + algorithm, e);
+        }
+    }
+
+    /// Formats bytes as lowercase hexadecimal.
+    private static String hex(byte @Unmodifiable [] bytes) {
+        StringBuilder builder = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes)
+            builder.append(Character.forDigit((b >>> 4) & 0xf, 16))
+                    .append(Character.forDigit(b & 0xf, 16));
+        return builder.toString();
+    }
+
+    /// Writes one big-endian 16-bit integer.
+    private static void writeBigEndianShort(ByteArrayOutputStream out, int value) {
+        out.write((value >>> 8) & 0xff);
+        out.write(value & 0xff);
+    }
+
+    /// Shared command managed through the alternatives system.
+    private static final String COMMON_LAUNCHER_PATH = "/usr/bin/hmcl";
+
+    /// One artifact installed by the package.
+    ///
+    /// @param path    absolute install path
+    /// @param mode    full Unix mode including the file-type bits
+    /// @param content file content; empty for directories
+    /// @param mtime   modification time in seconds since the Unix epoch
+    @NotNullByDefault
+    private record RpmFile(
+            String path,
+            int mode,
+            byte @Unmodifiable [] content,
+            long mtime
+    ) {
+    }
+}
