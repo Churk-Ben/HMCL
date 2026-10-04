@@ -249,6 +249,7 @@ def main() -> int:
                     "url": pr["url"],
                     "labels": sorted(label_names(pr)),
                     "score": round(pr["_score"], 4),
+                    "files": sorted(pr["_files"]),
                 }
                 for pr in pool
             ],

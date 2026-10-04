@@ -2,15 +2,16 @@ name: Experimental Daily
 
 # Composes a disposable release branch for the experimental channel:
 #   1. start from `experimental` (the stable fork base: community + workflow infra)
-#   2. merge upstream `main`
-#   3. merge every always-on layer from .github/experimental/layers.json
-#   4. try the ranked upstream pull-request pool in order, applying as many as
-#      possible up to `max_prs`; if the maximum is not reached, keep going until
-#      every candidate has been tried (conflicts are retried with i18n union
+#   2. merge upstream `main` and every always-on layer from layers.json
+#   3. try the ranked upstream pull-request pool in order, applying as many as
+#      possible up to `max_prs` (conflicts are retried with i18n union
 #      resolution and a 3-way patch apply, then skipped)
-#   5. build, push the release branch and trigger a release from it
+#   4. build; if the build fails because two pull requests conflict semantically,
+#      drop the pull request that most likely caused it and try again
+#   5. push the release branch and trigger a release from it
 #
-# `experimental` itself is never modified by this workflow.
+# `experimental` itself is never modified by this workflow, and the release
+# branch is only pushed once it builds.
 
 on:
   schedule:
@@ -99,11 +100,13 @@ jobs:
         id: compose
         env:
           GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
+          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
         run: |
           set -euo pipefail
 
           max_prs="${{ inputs.max_prs }}"
           [ -z "$max_prs" ] && max_prs="$(jq -r '.max_prs' .github/experimental/pr-policy.json)"
+          pool="${{ steps.select.outputs.prs }}"
 
           apply_pr() {
             pr="$1"
@@ -148,41 +151,67 @@ jobs:
             git merge --no-edit FETCH_HEAD
           done < <(jq -r '.layers[]' .github/experimental/layers.json)
           echo "::endgroup::"
+          base="$(git rev-parse HEAD)"
 
-          echo "::group::Aggregate upstream pull requests (max $max_prs)"
+          excluded=""
           applied=""
           skipped=""
-          for pr in $(echo "${{ steps.select.outputs.prs }}" | tr ',' ' '); do
-            [ -z "$pr" ] && continue
-            [ "$(echo $applied | wc -w)" -ge "$max_prs" ] && break
-            if apply_pr "$pr"; then
-              applied="$applied $pr"
-              echo "applied #$pr ($(echo $applied | wc -w)/$max_prs)"
-            else
-              skipped="$skipped $pr"
-              echo "skipped #$pr"
+          attempt=0
+          while true; do
+            attempt=$((attempt + 1))
+            echo "::group::Attempt $attempt (max $max_prs)"
+            git reset --hard -q "$base"
+            applied=""
+            skipped=""
+            for pr in $(echo "$pool" | tr ',' ' '); do
+              [ -z "$pr" ] && continue
+              case " $excluded " in *" $pr "*) continue ;; esac
+              [ "$(echo $applied | wc -w)" -ge "$max_prs" ] && break
+              if apply_pr "$pr"; then
+                applied="$applied $pr"
+                echo "applied #$pr ($(echo $applied | wc -w)/$max_prs)"
+              else
+                skipped="$skipped $pr"
+                echo "skipped #$pr"
+              fi
+            done
+            echo "applied:${applied:- none}"
+            echo "skipped:${skipped:- none}"
+            echo "::endgroup::"
+
+            if xvfb-run --auto-servernum ./gradlew build --no-daemon --parallel >/tmp/build.log 2>&1; then
+              echo "Build passed with $(echo $applied | wc -w) pull request(s)"
+              break
+            fi
+
+            echo "Build failed; identifying the offending pull request"
+            echo $applied | tr ' ' '\n' > /tmp/applied.txt
+            drop="$(python3 .github/scripts/pick-drop.py /tmp/pool.json /tmp/applied.txt /tmp/build.log "$GITHUB_WORKSPACE" || true)"
+            if [ -z "$drop" ]; then
+              echo "::error::build failed and no applied pull request matches the failing files"
+              tail -60 /tmp/build.log
+              exit 1
+            fi
+            echo "Dropping #$drop and retrying"
+            excluded="$excluded $drop"
+            if [ "$attempt" -ge 12 ]; then
+              echo "::error::too many build attempts"
+              exit 1
             fi
           done
-          echo "applied:${applied:- none}"
-          echo "skipped:${skipped:- none}"
-          echo "applied=${applied# }" >> "$GITHUB_OUTPUT"
-          echo "::endgroup::"
 
-          # Record what this composition contains so the release job can embed it
-          # in the release notes.
+          echo "applied=${applied# }" >> "$GITHUB_OUTPUT"
+          echo "excluded=${excluded# }" >> "$GITHUB_OUTPUT"
+
           echo $applied | tr ' ' '\n' > /tmp/applied.txt
           echo $skipped | tr ' ' '\n' > /tmp/skipped.txt
+          echo $excluded | tr ' ' '\n' > /tmp/dropped.txt
           python3 .github/scripts/render-composition.py \
-            /tmp/pool.json /tmp/applied.txt /tmp/skipped.txt .github/experimental/last-composition.md
+            /tmp/pool.json /tmp/applied.txt /tmp/skipped.txt /tmp/dropped.txt .github/experimental/last-composition.md
           git add .github/experimental/last-composition.md
           git commit -m "chore: record composition for $branch" >/dev/null 2>&1 || true
 
           git push -u origin --force-with-lease "$branch"
-
-      - name: Build
-        run: xvfb-run --auto-servernum ./gradlew build --no-daemon --parallel
-        env:
-          JAVA_TOOL_OPTIONS: -Djava.awt.headless=true
 
       - name: Trigger release
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.skip_release != true) }}
