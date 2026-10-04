@@ -52,6 +52,10 @@ jobs:
         with:
           ref: experimental
           fetch-depth: 0
+          # A PAT with the `workflow` scope is required because aggregated upstream
+          # pull requests may add or modify files under .github/workflows, which
+          # GITHUB_TOKEN is never allowed to push. Falls back to GITHUB_TOKEN.
+          token: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
@@ -61,7 +65,7 @@ jobs:
       - name: Select upstream pull requests
         id: select
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 .github/scripts/select-prs.py \
@@ -75,7 +79,7 @@ jobs:
       - name: Compose release branch
         id: compose
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           branch="release/$(date -u +%Y%m%d)"
@@ -136,7 +140,7 @@ jobs:
       - name: Trigger release
         if: ${{ success() && (github.event_name != 'workflow_dispatch' || inputs.skip_release != true) }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HMCL_WORKFLOW_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           gh workflow run "Create Release" -R "$GITHUB_REPOSITORY" \
             --ref "${{ steps.compose.outputs.branch }}" -f prerelease=false
