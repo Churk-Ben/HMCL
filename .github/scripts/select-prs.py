@@ -153,6 +153,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=300)
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--report-json", type=Path, help="Machine-readable pool metadata for release notes")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -237,6 +238,22 @@ def main() -> int:
 
     if args.report:
         args.report.write_text(report, encoding="utf-8")
+    if args.report_json:
+        payload = {
+            "target": target,
+            "pool_size": pool_size,
+            "applied_pool": [
+                {
+                    "number": pr["number"],
+                    "title": pr["title"],
+                    "url": pr["url"],
+                    "labels": sorted(label_names(pr)),
+                    "score": round(pr["_score"], 4),
+                }
+                for pr in pool
+            ],
+        }
+        args.report_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     if args.github_output:
         with args.github_output.open("a", encoding="utf-8") as output:
             output.write(f"prs={','.join(str(pr['number']) for pr in pool)}\n")

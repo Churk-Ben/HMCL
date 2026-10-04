@@ -87,7 +87,8 @@ jobs:
           args=(--policy .github/experimental/pr-policy.json
                 --conflict-files /tmp/conflict-files.txt
                 --github-output "$GITHUB_OUTPUT"
-                --report /tmp/selection.md)
+                --report /tmp/selection.md
+                --report-json /tmp/pool.json)
           if [ -n "${{ inputs.include }}" ]; then args+=(--include "${{ inputs.include }}"); fi
           if [ -n "${{ inputs.exclude }}" ]; then args+=(--exclude "${{ inputs.exclude }}"); fi
           if [ -n "${{ inputs.top_n }}" ]; then args+=(--target "${{ inputs.top_n }}"); fi
@@ -166,17 +167,14 @@ jobs:
           echo "applied=${applied# }" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
-          {
-            echo "Automated experimental composition for $(date -u +%Y-%m-%d)."
-            echo
-            echo "Layers: \`$(jq -c '.layers' .github/experimental/layers.json)\`"
-            echo
-            echo "Applied upstream pull requests:${applied:- none}"
-            echo
-            echo "Skipped upstream pull requests (conflict):${skipped:- none}"
-            echo
-            cat /tmp/selection.md
-          } > /tmp/release-note.md
+          # Record what this composition contains so the release job can embed it
+          # in the release notes.
+          echo $applied | tr ' ' '\n' > /tmp/applied.txt
+          echo $skipped | tr ' ' '\n' > /tmp/skipped.txt
+          python3 .github/scripts/render-composition.py \
+            /tmp/pool.json /tmp/applied.txt /tmp/skipped.txt .github/experimental/last-composition.md
+          git add .github/experimental/last-composition.md
+          git commit -m "chore: record composition for $branch" >/dev/null 2>&1 || true
 
           git push -u origin --force-with-lease "$branch"
 

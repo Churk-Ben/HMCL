@@ -144,6 +144,8 @@ jobs:
       group: fork-release-${{ github.sha }}
       cancel-in-progress: false
     steps:
+    - name: Checkout composition metadata
+      uses: actions/checkout@v6
     - name: Download release bundle
       uses: actions/download-artifact@v8
       with:
@@ -177,6 +179,11 @@ jobs:
           cat SHA256SUMS
           printf '```\n'
         } > "$RUNNER_TEMP/RELEASE_NOTE.md"
+        # Experimental compositions record the upstream pull requests they include.
+        composition="$GITHUB_WORKSPACE/.github/experimental/last-composition.md"
+        if [ -f "$composition" ]; then
+          { printf '\n---\n\n'; cat "$composition"; } >> "$RUNNER_TEMP/RELEASE_NOTE.md"
+        fi
         if gh release view "$tag" > /dev/null 2>&1; then
           gh release upload "$tag" HMCL-* SHA256SUMS --clobber
           gh release edit "$tag" --prerelease="$RELEASE_PRERELEASE" --latest="$latest" \
