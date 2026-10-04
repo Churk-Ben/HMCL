@@ -33,6 +33,15 @@ final class LinuxPackageFiles {
     /// Generic command managed through the alternatives system.
     static final String COMMON_LAUNCHER_PATH = "/usr/bin/hmcl";
 
+    /// Permission bits of an installed directory.
+    static final int DIRECTORY_PERMISSIONS = 0755;
+
+    /// Permission bits of an installed executable.
+    static final int EXECUTABLE_PERMISSIONS = 0755;
+
+    /// Permission bits of an installed regular data file.
+    static final int REGULAR_FILE_PERMISSIONS = 0644;
+
     /// Release channel metadata used for names and alternatives priority.
     private final ReleaseType releaseType;
 

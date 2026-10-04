@@ -64,10 +64,6 @@ import java.util.zip.GZIPOutputStream;
 public abstract class CreateDeb extends DefaultTask {
     public static final Logger LOGGER = Logging.getLogger(CreateDeb.class);
 
-    private static final int DIRECTORY_MODE = 0755;
-    private static final int EXECUTABLE_MODE = 0755;
-    private static final int REGULAR_FILE_MODE = 0644;
-
     /// Debian version written into the `control` file and output filename.
     @Input
     public abstract Property<String> getVersion();
@@ -132,7 +128,7 @@ public abstract class CreateDeb extends DefaultTask {
         }
 
         TarArchiveEntry entry = new TarArchiveEntry(dirName + "/", true);
-        entry.setMode(DIRECTORY_MODE);
+        entry.setMode(LinuxPackageFiles.DIRECTORY_PERMISSIONS);
         output.putArchiveEntry(entry);
         output.closeArchiveEntry();
         directories.add(dirName);
@@ -187,9 +183,9 @@ public abstract class CreateDeb extends DefaultTask {
             output.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU);
 
             Set<String> directories = new HashSet<>();
-            putEntry(directories, output, "./control", getControl(appShBytes.length, launcherScriptBytes.length, desktopInfoBytes.length, iconBytes.length), REGULAR_FILE_MODE);
-            putEntry(directories, output, "./postinst", getPostinst(), EXECUTABLE_MODE);
-            putEntry(directories, output, "./prerm", getPrerm(), EXECUTABLE_MODE);
+            putEntry(directories, output, "./control", getControl(appShBytes.length, launcherScriptBytes.length, desktopInfoBytes.length, iconBytes.length), LinuxPackageFiles.REGULAR_FILE_PERMISSIONS);
+            putEntry(directories, output, "./postinst", getPostinst(), LinuxPackageFiles.EXECUTABLE_PERMISSIONS);
+            putEntry(directories, output, "./prerm", getPrerm(), LinuxPackageFiles.EXECUTABLE_PERMISSIONS);
         }
 
         Path outputFile = getOutputFile().get().getAsFile().toPath();
@@ -201,10 +197,10 @@ public abstract class CreateDeb extends DefaultTask {
             output.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU);
 
             Set<String> directories = new HashSet<>();
-            putEntry(directories, output, "." + getTargetPath(), appShBytes, EXECUTABLE_MODE);
-            putEntry(directories, output, "." + getLauncherPath(), launcherScriptBytes, EXECUTABLE_MODE);
-            putEntry(directories, output, "." + getDesktopFilePath(), desktopInfoBytes, REGULAR_FILE_MODE);
-            putEntry(directories, output, "." + getIconTargetPath(), iconBytes, REGULAR_FILE_MODE);
+            putEntry(directories, output, "." + getTargetPath(), appShBytes, LinuxPackageFiles.EXECUTABLE_PERMISSIONS);
+            putEntry(directories, output, "." + getLauncherPath(), launcherScriptBytes, LinuxPackageFiles.EXECUTABLE_PERMISSIONS);
+            putEntry(directories, output, "." + getDesktopFilePath(), desktopInfoBytes, LinuxPackageFiles.REGULAR_FILE_PERMISSIONS);
+            putEntry(directories, output, "." + getIconTargetPath(), iconBytes, LinuxPackageFiles.REGULAR_FILE_PERMISSIONS);
         }
 
         LOGGER.lifecycle("Creating deb file");

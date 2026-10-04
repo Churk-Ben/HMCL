@@ -77,14 +77,14 @@ public abstract class CreateRpm extends DefaultTask {
     /// Logger used for progress messages.
     public static final Logger LOGGER = Logging.getLogger(CreateRpm.class);
 
-    /// Unix mode of an installed directory.
-    private static final int DIRECTORY_MODE = 040755;
+    /// Full cpio mode of an installed directory.
+    private static final int DIRECTORY_MODE = CpioConstants.C_ISDIR | LinuxPackageFiles.DIRECTORY_PERMISSIONS;
 
-    /// Unix mode of an installed executable.
-    private static final int EXECUTABLE_MODE = 0100755;
+    /// Full cpio mode of an installed executable.
+    private static final int EXECUTABLE_MODE = CpioConstants.C_ISREG | LinuxPackageFiles.EXECUTABLE_PERMISSIONS;
 
-    /// Unix mode of a regular data file.
-    private static final int REGULAR_FILE_MODE = 0100644;
+    /// Full cpio mode of a regular data file.
+    private static final int REGULAR_FILE_MODE = CpioConstants.C_ISREG | LinuxPackageFiles.REGULAR_FILE_PERMISSIONS;
 
     /// Region tag identifying the immutable region of a package header.
     private static final int HEADER_REGION_TAG = 63;
@@ -462,7 +462,7 @@ public abstract class CreateRpm extends DefaultTask {
         signature.putString(SIG_SHA1, sha1(header));
         signature.putString(SIG_SHA256, sha256(header));
         signature.putInt32(SIG_SIZE, header.length + payload.length);
-        signature.putBin(SIG_MD5, md5(concat(header, payload)));
+        signature.putBin(SIG_MD5, md5(header, payload));
         signature.putInt32(SIG_PAYLOAD_SIZE, archiveSize);
 
         byte[] bytes = signature.build();
@@ -544,14 +544,6 @@ public abstract class CreateRpm extends DefaultTask {
         return result.toString();
     }
 
-    /// Concatenates two byte arrays.
-    private static byte @Unmodifiable [] concat(byte @Unmodifiable [] first, byte @Unmodifiable [] second) {
-        byte[] result = new byte[first.length + second.length];
-        System.arraycopy(first, 0, result, 0, first.length);
-        System.arraycopy(second, 0, result, first.length, second.length);
-        return result;
-    }
-
     /// Returns the lowercase hexadecimal SHA-1 digest of `data`.
     private static String sha1(byte @Unmodifiable [] data) {
         return HexFormat.of().formatHex(digest("SHA-1", data));
@@ -562,15 +554,26 @@ public abstract class CreateRpm extends DefaultTask {
         return HexFormat.of().formatHex(digest("SHA-256", data));
     }
 
-    /// Returns the raw MD5 digest of `data`.
-    private static byte @Unmodifiable [] md5(byte @Unmodifiable [] data) {
-        return digest("MD5", data);
+    /// Returns the raw MD5 digest of the concatenation of `first` and `second`.
+    ///
+    /// The digest is fed incrementally so the two inputs are never copied into a
+    /// single buffer, which matters because the payload can be several megabytes.
+    private static byte @Unmodifiable [] md5(byte @Unmodifiable [] first, byte @Unmodifiable [] second) {
+        MessageDigest digest = newDigest("MD5");
+        digest.update(first);
+        digest.update(second);
+        return digest.digest();
     }
 
-    /// Computes a message digest, wrapping the checked exception that cannot occur.
+    /// Computes a message digest over `data`.
     private static byte @Unmodifiable [] digest(String algorithm, byte @Unmodifiable [] data) {
+        return newDigest(algorithm).digest(data);
+    }
+
+    /// Creates a message digest, wrapping the checked exception that cannot occur.
+    private static MessageDigest newDigest(String algorithm) {
         try {
-            return MessageDigest.getInstance(algorithm).digest(data);
+            return MessageDigest.getInstance(algorithm);
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("Unsupported digest algorithm: " + algorithm, e);
         }

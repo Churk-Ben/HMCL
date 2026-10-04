@@ -42,7 +42,7 @@ import java.util.List;
 ///
 /// All integers are written in network byte order.
 @NotNullByDefault
-public final class RpmHeader {
+final class RpmHeader {
 
     /// RPM type code for a signed 16-bit integer.
     private static final int TYPE_INT16 = 3;
