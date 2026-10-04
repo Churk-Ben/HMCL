@@ -30,9 +30,11 @@ import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.stage.FileChooser;
 import org.jackhuang.hmcl.addon.AddonLoader;
+import org.jackhuang.hmcl.addon.mod.LocalModFile;
 import org.jackhuang.hmcl.download.DownloadProvider;
 import org.jackhuang.hmcl.game.*;
 import org.jackhuang.hmcl.addon.mod.ModLoaderType;
+import org.jackhuang.hmcl.addon.mod.ModManager;
 import org.jackhuang.hmcl.addon.RemoteAddon;
 import org.jackhuang.hmcl.addon.RemoteAddonRepository;
 import org.jackhuang.hmcl.task.FileDownloadTask;
@@ -84,6 +86,13 @@ public class DownloadPage extends Control implements DecoratorPage {
         this.mod = translations.getModByCurseForgeId(addon.slug());
         this.instanceReference = instanceReference;
         this.callback = callback;
+
+        // Warm up the installed-mod cache once when this page is opened so dependency rows do not
+        // rescan the instance every time a version dialog is shown.
+        if (instanceReference.instanceId() != null) {
+            Task.supplyAsync(Schedulers.io(), () -> AddonVersion.getInstalledMods(instanceReference)).start();
+        }
+
         loadAddonVersions();
 
         this.state.set(State.fromTitle(addon.title()));
@@ -162,6 +171,51 @@ public class DownloadPage extends Control implements DecoratorPage {
             saveAs(file);
         } else {
             this.callback.download(page.getDownloadProvider(), instanceReference.repository(), instanceReference.instanceId(), addon, file);
+        }
+    }
+
+    /// Updates the installed-mod cache after a mod has been downloaded into an instance.
+    ///
+    /// @param instanceReference the destination instance
+    /// @param addon the downloaded mod
+    public static void markModInstalled(HMCLGameInstance.Optional instanceReference, RemoteAddon addon) {
+        Set<String> ids = new HashSet<>();
+        if (StringUtils.isNotBlank(addon.slug())) {
+            ids.add(addon.slug());
+        }
+        ModTranslations.Mod translated = ModTranslations.getTranslationsByAddonType(
+                Objects.requireNonNullElse(addon.type(), RemoteAddon.Type.MOD)).getModByCurseForgeId(addon.slug());
+        if (translated != null) {
+            ids.addAll(translated.getModIds());
+        }
+        AddonVersion.markInstalled(instanceReference, ids);
+    }
+
+    /// Updates the installed-mod cache after a mod is enabled or disabled.
+    ///
+    /// @param instanceReference the affected instance
+    /// @param modId the mod id
+    /// @param active whether the mod is enabled
+    public static void setModActive(HMCLGameInstance.Optional instanceReference, String modId, boolean active) {
+        if (StringUtils.isBlank(modId)) {
+            return;
+        }
+        synchronized (AddonVersion.INSTALLED_CACHE_LOCK) {
+            if (AddonVersion.isCachedInstance(instanceReference) && AddonVersion.installedCache != null) {
+                AddonVersion.installedCache.put(modId.toLowerCase(Locale.ROOT), active);
+            } else {
+                AddonVersion.installedCacheGeneration++;
+            }
+        }
+    }
+
+    /// Invalidates the installed-mod cache after files are added or removed.
+    public static void invalidateInstalledMods() {
+        synchronized (AddonVersion.INSTALLED_CACHE_LOCK) {
+            AddonVersion.installedCacheRepository = null;
+            AddonVersion.installedCacheInstanceId = null;
+            AddonVersion.installedCache = null;
+            AddonVersion.installedCacheGeneration++;
         }
     }
 
@@ -373,7 +427,8 @@ public class DownloadPage extends Control implements DecoratorPage {
 
         public final RemoteAddon addon;
 
-        DependencyAddonItem(DownloadListPage page, RemoteAddon addon, HMCLGameInstance.Optional instanceReference) {
+        DependencyAddonItem(DownloadListPage page, RemoteAddon addon, HMCLGameInstance.Optional instanceReference,
+                            @Nullable Map<String, Boolean> installedMods) {
             this.addon = addon;
 
             HBox pane = new HBox(8);
@@ -402,6 +457,29 @@ public class DownloadPage extends Control implements DecoratorPage {
             ModTranslations.Mod mod = ModTranslations.getTranslationsByAddonType(type).getModByCurseForgeId(addon.slug());
             content.setTitle(mod != null && I18n.isUseChinese() ? mod.getDisplayName() : addon.title());
             content.setSubtitle(addon.description());
+            if (installedMods != null) {
+                Set<String> candidates = new HashSet<>();
+                if (StringUtils.isNotBlank(addon.slug())) {
+                    candidates.add(addon.slug().toLowerCase(Locale.ROOT));
+                }
+                if (mod != null) {
+                    for (String modId : mod.getModIds()) {
+                        candidates.add(modId.toLowerCase(Locale.ROOT));
+                    }
+                }
+
+                @Nullable Boolean active = null;
+                for (String candidate : candidates) {
+                    if (installedMods.containsKey(candidate)) {
+                        active = installedMods.get(candidate);
+                        if (active) {
+                            break;
+                        }
+                    }
+                }
+                content.addTag(i18n(active == null ? "addon.dependencies.missing"
+                        : active ? "addon.dependencies.installed" : "addon.dependencies.disabled"));
+            }
             for (String category : addon.categories()) {
                 if (page.shouldDisplayCategory(category))
                     content.addTag(page.getLocalizedCategory(category, null));
@@ -570,6 +648,8 @@ public class DownloadPage extends Control implements DecoratorPage {
         private void loadDependencies(RemoteAddon.Version version, DownloadPage selfPage, SpinnerPane spinnerPane, ComponentList dependenciesList) {
             spinnerPane.setLoading(true);
             Task.composeAsync(() -> {
+                Map<String, Boolean> installedMods = getInstalledMods(selfPage.instanceReference);
+
                 // TODO: Massive tasks may cause OOM.
                 EnumMap<RemoteAddon.DependencyType, Pair<Label, List<DependencyAddonItem>>> dependencies = new EnumMap<>(RemoteAddon.DependencyType.class);
                 AtomicBoolean hasBroken = new AtomicBoolean(false);
@@ -595,7 +675,12 @@ public class DownloadPage extends Control implements DecoratorPage {
                                     hasBroken.set(true);
                                     return;
                                 }
-                                DependencyAddonItem dependencyAddonItem = new DependencyAddonItem(selfPage.page, dep, selfPage.instanceReference);
+                                @Nullable Map<String, Boolean> statusSource =
+                                        dependency.getType() == RemoteAddon.DependencyType.REQUIRED
+                                                ? installedMods
+                                                : null;
+                                DependencyAddonItem dependencyAddonItem = new DependencyAddonItem(
+                                        selfPage.page, dep, selfPage.instanceReference, statusSource);
                                 var listener = FXUtils.onWeakChangeAndOperate(dependenciesList.widthProperty(), d -> FXUtils.setLimitWidth(dependencyAddonItem, d.doubleValue()));
                                 dependencyAddonItem.getProperties().put("DependencyAddonItem.width", listener);
                                 dependencies.get(dependency.getType()).value().add(dependencyAddonItem);
@@ -632,6 +717,93 @@ public class DownloadPage extends Control implements DecoratorPage {
                 }
                 spinnerPane.setLoading(false);
             }).start();
+        }
+
+        /// Serializes access to the installed-mod cache.
+        private static final Object INSTALLED_CACHE_LOCK = new Object();
+
+        /// Repository associated with the cached map.
+        private static @Nullable HMCLGameRepository installedCacheRepository;
+
+        /// Instance associated with the cached map.
+        private static @Nullable GameInstanceID installedCacheInstanceId;
+
+        /// Lowercase mod ids mapped to whether at least one matching file is active.
+        private static @Nullable Map<String, Boolean> installedCache;
+
+        /// Changes whenever a cache mutation invalidates an in-flight scan.
+        private static long installedCacheGeneration;
+
+        /// Returns whether the supplied reference identifies the currently cached instance.
+        private static boolean isCachedInstance(HMCLGameInstance.Optional instanceReference) {
+            return installedCacheRepository == instanceReference.repository()
+                    && Objects.equals(installedCacheInstanceId, instanceReference.instanceId());
+        }
+
+        /// Returns the installed-mod map for an instance, rebuilding it when necessary.
+        private static @Nullable Map<String, Boolean> getInstalledMods(HMCLGameInstance.Optional instanceReference) {
+            if (instanceReference.instanceId() == null) {
+                return null;
+            }
+
+            long generationAtStart;
+            synchronized (INSTALLED_CACHE_LOCK) {
+                if (isCachedInstance(instanceReference)) {
+                    return installedCache;
+                }
+                generationAtStart = installedCacheGeneration;
+            }
+
+            @Nullable Map<String, Boolean> resolved = resolveInstalledMods(instanceReference);
+            if (resolved != null) {
+                synchronized (INSTALLED_CACHE_LOCK) {
+                    if (generationAtStart == installedCacheGeneration) {
+                        installedCacheRepository = instanceReference.repository();
+                        installedCacheInstanceId = instanceReference.instanceId();
+                        installedCache = resolved;
+                    }
+                }
+            }
+            return resolved;
+        }
+
+        /// Marks the supplied mod ids as installed and active in the targeted cache entry.
+        private static void markInstalled(HMCLGameInstance.Optional instanceReference, Collection<String> modIds) {
+            synchronized (INSTALLED_CACHE_LOCK) {
+                if (isCachedInstance(instanceReference) && installedCache != null) {
+                    for (String id : modIds) {
+                        if (StringUtils.isNotBlank(id)) {
+                            installedCache.put(id.toLowerCase(Locale.ROOT), Boolean.TRUE);
+                        }
+                    }
+                } else {
+                    installedCacheGeneration++;
+                }
+            }
+        }
+
+        /// Reads the instance's mod files and builds a lowercase id-to-active-state map.
+        private static @Nullable Map<String, Boolean> resolveInstalledMods(HMCLGameInstance.Optional instanceReference) {
+            HMCLGameInstance.Optional refreshed = instanceReference.refreshed();
+            @Nullable HMCLGameInstance instance = refreshed.instance();
+            if (instance == null) {
+                return null;
+            }
+            try {
+                ModManager modManager = instance.getModManager();
+                Map<String, Boolean> installed = new HashMap<>();
+                for (LocalModFile file : modManager.getLocalFiles()) {
+                    String id = file.getId();
+                    if (StringUtils.isBlank(id)) {
+                        continue;
+                    }
+                    installed.merge(id.toLowerCase(Locale.ROOT), file.isActive(), Boolean::logicalOr);
+                }
+                return installed;
+            } catch (Exception e) {
+                LOG.warning("Failed to resolve installed mods for dependency status", e);
+                return null;
+            }
         }
 
         private void loadVersionPageUrl(RemoteAddon.Version version, RemoteAddonRepository repo, JFXHyperlink button) {
