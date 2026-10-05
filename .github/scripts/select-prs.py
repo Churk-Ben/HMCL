@@ -59,8 +59,13 @@ query($owner: String!, $name: String!, $cursor: String) {
 """
 
 
-def run_gh(args: list[str], attempts: int = 3) -> str:
-    """Runs the GitHub CLI, retrying transient failures."""
+def run_gh(args: list[str], attempts: int = 5) -> str:
+    """Runs the GitHub CLI, retrying transient failures with exponential backoff.
+
+    The GraphQL API intermittently returns ``HTTP 502`` under load; a handful of
+    attempts with growing delays rides these out instead of failing the whole
+    daily composition.
+    """
     last_error = ""
     for attempt in range(1, attempts + 1):
         result = subprocess.run(["gh", *args], capture_output=True, text=True)
@@ -68,7 +73,7 @@ def run_gh(args: list[str], attempts: int = 3) -> str:
             return result.stdout
         last_error = result.stderr.strip()
         if attempt < attempts:
-            time.sleep(2 * attempt)
+            time.sleep(min(2 ** attempt, 30))
     raise RuntimeError(f"gh {args[0]} failed after {attempts} attempts: {last_error}")
 
 
