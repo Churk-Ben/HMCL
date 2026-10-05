@@ -25,9 +25,9 @@ import org.glavo.uuid.UUIDs;
 import org.jackhuang.hmcl.auth.AuthenticationException;
 import org.jackhuang.hmcl.auth.ServerDisconnectException;
 import org.jackhuang.hmcl.auth.ServerResponseMalformedException;
+import org.jackhuang.hmcl.game.skin.TextureType;
 import org.jackhuang.hmcl.util.StringUtils;
 import org.jackhuang.hmcl.util.gson.ValidationTypeAdapterFactory;
-import org.jackhuang.hmcl.util.io.FileUtils;
 import org.jackhuang.hmcl.util.io.HttpMultipartRequest;
 import org.jackhuang.hmcl.util.io.NetworkUtils;
 import org.jackhuang.hmcl.util.javafx.ObservableOptionalCache;
@@ -38,6 +38,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.URI;
 import java.util.*;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -46,8 +47,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.unmodifiableList;
 import static org.jackhuang.hmcl.util.Lang.mapOf;
 import static org.jackhuang.hmcl.util.Lang.threadPool;
-import static org.jackhuang.hmcl.util.logging.Logger.LOG;
 import static org.jackhuang.hmcl.util.Pair.pair;
+import static org.jackhuang.hmcl.util.logging.Logger.LOG;
 
 public class YggdrasilService {
 
@@ -149,7 +150,7 @@ public class YggdrasilService {
         requireEmpty(request(provider.getInvalidationURL(), createRequestWithCredentials(accessToken, clientToken)));
     }
 
-    public void uploadSkin(UUID uuid, String accessToken, boolean isSlim, Path file) throws AuthenticationException, UnsupportedOperationException {
+    public void uploadSkin(UUID uuid, String accessToken, boolean isSlim, InputStream fis) throws AuthenticationException, UnsupportedOperationException {
         try {
             HttpURLConnection con = NetworkUtils.createHttpConnection(provider.getSkinUploadURL(uuid));
             con.setRequestMethod("PUT");
@@ -157,9 +158,7 @@ public class YggdrasilService {
             con.setDoOutput(true);
             try (HttpMultipartRequest request = new HttpMultipartRequest(con)) {
                 request.param("model", isSlim ? "slim" : "");
-                try (InputStream fis = Files.newInputStream(file)) {
-                    request.file("file", FileUtils.getName(file), "image/" + FileUtils.getExtension(file), fis);
-                }
+                request.file("file", "skin.png", "image/png", fis);
             }
             requireEmpty(NetworkUtils.readFullyAsString(con));
         } catch (IOException e) {
@@ -169,7 +168,7 @@ public class YggdrasilService {
 
     /**
      * Get complete game profile.
-     *
+     * <p>
      * Game profile provided from authentication is not complete (no skin data in properties).
      *
      * @param uuid the uuid that the character corresponding to.

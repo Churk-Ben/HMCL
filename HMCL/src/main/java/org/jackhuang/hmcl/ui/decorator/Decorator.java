@@ -1065,6 +1065,16 @@ public final class Decorator {
 
     /// Navigates back if the current page permits the operation.
     void back() {
+        if (navigator.getCurrentPage() instanceof BackConfirmPage backConfirmPage) {
+            if (!backConfirmPage.canBack()) {
+                backConfirmPage.confirmBack(this::doBack);
+                return;
+            }
+        }
+        doBack();
+    }
+
+    void doBack() {
         if (navigator.getCurrentPage() instanceof DecoratorPage page) {
             if (page.back() && navigator.canGoBack()) {
                 navigator.close();
